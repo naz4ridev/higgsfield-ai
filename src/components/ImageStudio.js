@@ -4,10 +4,24 @@ import {
     i2iModels, getAspectRatiosForI2IModel, getResolutionsForI2IModel, getQualityFieldForI2IModel,
     getMaxImagesForI2IModel
 } from '../lib/models.js';
+import { localAI, isLocalAIAvailable } from '../lib/localInferenceClient.js';
+import { LOCAL_MODEL_CATALOG, getLocalModelById } from '../lib/localModels.js';
 import { ENHANCE_TAGS, QUICK_PROMPTS } from '../lib/promptUtils.js';
 import { AuthModal } from './AuthModal.js';
+import { t } from '../lib/i18n.js';
 import { createUploadPicker } from './UploadPicker.js';
 import { savePendingJob, removePendingJob, getPendingJobs } from '../lib/pendingJobs.js';
+
+function createInlineInstructions(type) {
+    const el = document.createElement('div');
+    el.className = 'w-full text-center text-white/30 text-sm flex flex-col items-center gap-2 py-2';
+    const icon = type === 'image' ? '🖼️' : '🎬';
+    el.innerHTML = `
+        <p>${icon} Enter a prompt above and click <span class="text-primary font-semibold">Generate</span> to create your ${type}.</p>
+        <p class="text-xs text-white/20">Tip: Be descriptive — include style, lighting, mood, and subject for best results.</p>
+    `;
+    return el;
+}
 
 export function ImageStudio() {
     const container = document.createElement('div');
@@ -21,6 +35,14 @@ export function ImageStudio() {
     let dropdownOpen = null;
     let uploadedImageUrls = []; // array of uploaded image URLs (multi-image support)
     let imageMode = false; // false = t2i models, true = i2i models
+
+    // Local inference state — only image-capable models surface here.
+    // sd.cpp uses type='sd1'|'sdxl'|'z-image'; Wan2GP image models use type='image'.
+    // Wan2GP video models (type='video') are hidden from ImageStudio.
+    const LOCAL_IMAGE_MODELS = LOCAL_MODEL_CATALOG.filter(m => m.type !== 'video');
+    let useLocalModel = false;
+    let selectedLocalModel = LOCAL_IMAGE_MODELS[0]?.id || null;
+    let localGenProgress = 0; // 0–1
 
     // Advanced parameters state
     let negativePrompt = '';
@@ -69,8 +91,8 @@ export function ImageStudio() {
                 <div class="absolute top-4 right-4 text-primary animate-pulse">✨</div>
              </div>
         </div>
-        <h1 class="text-2xl sm:text-4xl md:text-7xl font-black text-white tracking-widest uppercase mb-4 selection:bg-primary selection:text-black text-center px-4">Image Studio</h1>
-        <p class="text-secondary text-sm font-medium tracking-wide opacity-60">Transform images with AI — upscale, stylize, animate and more</p>
+        <h1 class="text-2xl sm:text-4xl md:text-7xl font-black text-white tracking-widest uppercase mb-4 selection:bg-primary selection:text-black text-center px-4">${t('image.title')}</h1>
+        <p class="text-secondary text-sm font-medium tracking-wide opacity-60">${t('image.subtitle')}</p>
     `;
     container.appendChild(hero);
 
@@ -91,6 +113,8 @@ export function ImageStudio() {
     // --- Image Upload Picker (Image-to-Image) ---
     const picker = createUploadPicker({
         anchorContainer: container,
+        uploadFn: (file) => useLocalModel ? URL.createObjectURL(file) : muapi.uploadFile(file),
+        requireApiKey: () => !useLocalModel,
         onSelect: ({ url, urls }) => {
             uploadedImageUrls = urls || [url];
             if (!imageMode) {
@@ -106,8 +130,8 @@ export function ImageStudio() {
                 picker.setMaxImages(getMaxImagesForI2IModel(selectedModel));
             }
             textarea.placeholder = uploadedImageUrls.length > 1
-                ? `${uploadedImageUrls.length} images selected — describe the transformation (optional)`
-                : 'Describe how to transform this image (optional)';
+                ? `${uploadedImageUrls.length} ${t('image.multiImageNote') || 'images selected — describe the transformation (optional)'}`
+                : t('image.placeholderTransform');
         },
         onClear: () => {
             uploadedImageUrls = [];
@@ -121,7 +145,7 @@ export function ImageStudio() {
             qualityBtn.style.display = t2iResolutions.length > 0 ? 'flex' : 'none';
             if (t2iResolutions.length > 0) document.getElementById('quality-btn-label').textContent = t2iResolutions[0];
             picker.setMaxImages(1);
-            textarea.placeholder = 'Describe the image you want to create';
+            textarea.placeholder = t('image.placeholder');
         }
     });
     topRow.appendChild(picker.trigger);
@@ -164,15 +188,46 @@ export function ImageStudio() {
         <div class="w-5 h-5 bg-primary rounded-md flex items-center justify-center shadow-lg shadow-primary/20">
             <span class="text-[10px] font-black text-black">G</span>
         </div>
-    `, selectedModelName, 'model-btn', 'Select AI generation model');
+    `, selectedModelName, 'model-btn', t('image.modelTooltip'));
 
     const arBtn = createControlBtn(`
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="opacity-60 text-secondary"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>
-    `, selectedAr, 'ar-btn', 'Change aspect ratio');
+    `, selectedAr, 'ar-btn', t('image.arTooltip'));
 
     const qualityBtn = createControlBtn(`
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="opacity-60 text-secondary"><path d="M6 2L3 6v15a2 2 0 002 2h14a2 2 0 002-2V6l-3-4H6z"/></svg>
-    `, '720p', 'quality-btn', 'Set output quality');
+    `, '720p', 'quality-btn', t('image.qualityTooltip'));
+
+    // Local / API source toggle (only shown in Electron)
+    let localToggleBtn = null;
+    if (isLocalAIAvailable()) {
+        localToggleBtn = document.createElement('button');
+        localToggleBtn.id = 'local-toggle-btn';
+        localToggleBtn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl transition-all border text-xs font-bold whitespace-nowrap';
+        const updateLocalToggleStyle = () => {
+            if (useLocalModel) {
+                localToggleBtn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl transition-all border text-xs font-bold whitespace-nowrap bg-primary/20 border-primary/40 text-primary';
+                localToggleBtn.textContent = t('image.local');
+            } else {
+                localToggleBtn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl transition-all border text-xs font-bold whitespace-nowrap bg-white/5 border-white/5 text-white/60 hover:bg-white/10';
+                localToggleBtn.textContent = t('image.api');
+            }
+        };
+        updateLocalToggleStyle();
+        localToggleBtn.onclick = (e) => {
+            e.stopPropagation();
+            useLocalModel = !useLocalModel;
+            updateLocalToggleStyle();
+            // Reflect active model in the button label
+            if (useLocalModel) {
+                const lm = getLocalModelById(selectedLocalModel);
+                if (lm) document.getElementById('model-btn-label').textContent = lm.name;
+            } else {
+                document.getElementById('model-btn-label').textContent = selectedModelName;
+            }
+        };
+        controlsLeft.appendChild(localToggleBtn);
+    }
 
     controlsLeft.appendChild(modelBtn);
     controlsLeft.appendChild(arBtn);
@@ -181,13 +236,13 @@ export function ImageStudio() {
     // Advanced options toggle button
     const advancedBtn = createControlBtn(`
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="opacity-60 text-secondary"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 001.82-.33 1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-1.82.33A1.65 1.65 0 0019.4 9a1.65 1.65 0 00-1.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
-    `, 'Advanced', 'advanced-btn', 'Show advanced options');
+    `, t('common.advanced'), 'advanced-btn', t('image.advancedTooltip'));
     controlsLeft.appendChild(advancedBtn);
-    
+
     // Quick Tools toggle button
     const toolsBtn = createControlBtn(`
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="opacity-60 text-secondary"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>
-    `, 'Tools', 'tools-btn', 'Quick starters & prompt enhancer');
+    `, t('common.tools'), 'tools-btn', t('image.toolsTooltip'));
     controlsLeft.appendChild(toolsBtn);
     // Show quality button if the default model has quality/resolution options
     const _initResolutions = getResolutionsForModel(defaultModel.id);
@@ -199,8 +254,8 @@ export function ImageStudio() {
 
     const generateBtn = document.createElement('button');
     generateBtn.className = 'bg-primary text-black px-6 md:px-8 py-3 md:py-3.5 rounded-xl md:rounded-[1.5rem] font-black text-sm md:text-base hover:shadow-glow hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-2.5 w-full sm:w-auto shadow-lg';
-    generateBtn.setAttribute('data-tooltip', 'Generate AI image from prompt');
-    generateBtn.innerHTML = `Generate ✨`;
+    generateBtn.setAttribute('data-tooltip', t('image.generateTooltip'));
+    generateBtn.innerHTML = t('common.generate');
 
     bottomRow.appendChild(controlsLeft);
     bottomRow.appendChild(generateBtn);
@@ -211,6 +266,32 @@ export function ImageStudio() {
     const inlineInstructions = createInlineInstructions('image');
     inlineInstructions.classList.add('max-w-4xl', 'mt-8');
     container.appendChild(inlineInstructions);
+
+    // Local generation progress bar (hidden until active)
+    const localProgressWrap = document.createElement('div');
+    localProgressWrap.className = 'w-full max-w-4xl mt-4 hidden flex-col gap-2';
+    localProgressWrap.id = 'local-progress-wrap';
+    localProgressWrap.innerHTML = `
+        <div class="flex items-center justify-between">
+            <span class="text-xs font-bold text-white/60">${t('image.generatingLocally')}</span>
+            <span id="local-progress-pct" class="text-xs font-bold text-primary">0%</span>
+        </div>
+        <div class="h-1.5 rounded-full bg-white/10 overflow-hidden">
+            <div id="local-progress-fill" class="h-full bg-primary transition-all duration-200" style="width:0%"></div>
+        </div>
+        <div class="flex justify-end">
+            <button id="local-cancel-btn" class="text-xs text-red-400 hover:text-red-300 transition-colors">${t('common.cancel')}</button>
+        </div>
+    `;
+    container.appendChild(localProgressWrap);
+
+    localProgressWrap.querySelector('#local-cancel-btn')?.addEventListener('click', () => {
+        localAI.cancelGeneration();
+        localProgressWrap.classList.remove('flex');
+        localProgressWrap.classList.add('hidden');
+        generateBtn.disabled = false;
+        generateBtn.innerHTML = t('common.generate');
+    });
 
     // ==========================================
     // 3. QUICK TOOLS PANEL (Prompt Enhancer + Quick Starters)
@@ -223,16 +304,16 @@ export function ImageStudio() {
     toolsPanel.innerHTML = `
         <div class="bg-[#111]/90 backdrop-blur-xl border border-white/10 rounded-2xl p-5 flex flex-col gap-4">
             <div class="flex items-center justify-between pb-3 border-b border-white/5">
-                <h3 class="text-sm font-bold text-white">Quick Tools</h3>
+                <h3 class="text-sm font-bold text-white">${t('image.quickTools')}</h3>
                 <button id="close-tools-btn" class="text-white/40 hover:text-white transition-colors">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
                 </button>
             </div>
-            
+
             <div class="flex flex-col lg:flex-row gap-6">
                 <!-- Quick Starters Section -->
                 <div class="flex-1">
-                    <h4 class="text-xs font-bold text-secondary uppercase tracking-wider mb-3">Quick Starters</h4>
+                    <h4 class="text-xs font-bold text-secondary uppercase tracking-wider mb-3">${t('image.quickStarters')}</h4>
                     <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
                         ${QUICK_PROMPTS.map(q => `
                             <button class="quick-starter-btn px-3 py-2 rounded-lg text-xs font-bold bg-white/5 text-secondary hover:bg-white/10 hover:text-primary transition-all text-left border border-white/5 hover:border-primary/30" data-prompt="${q.prompt}">
@@ -244,14 +325,14 @@ export function ImageStudio() {
                 
                 <!-- Prompt Enhancer Section -->
                 <div class="flex-1">
-                    <h4 class="text-xs font-bold text-secondary uppercase tracking-wider mb-3">Prompt Enhancer</h4>
+                    <h4 class="text-xs font-bold text-secondary uppercase tracking-wider mb-3">${t('image.promptEnhancer')}</h4>
                     <div class="flex flex-col gap-3">
-                        <input type="text" id="base-prompt-input" 
-                            placeholder="Enter base prompt..."
+                        <input type="text" id="base-prompt-input"
+                            placeholder="${t('image.basePromptPlaceholder')}"
                             class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm placeholder:text-muted focus:outline-none focus:border-primary/50 transition-colors">
-                        
+
                         <div>
-                            <label class="text-[10px] font-bold text-muted uppercase tracking-wider mb-2 block">Enhancement Tags</label>
+                            <label class="text-[10px] font-bold text-muted uppercase tracking-wider mb-2 block">${t('image.enhancementTags')}</label>
                             <div id="enhance-tags-area" class="flex flex-wrap gap-1.5">
                                 ${Object.entries(ENHANCE_TAGS).map(([category, tags]) => 
                                     tags.map(tag => `<button class="enhance-tag-btn px-2 py-1 rounded-full text-[10px] font-bold bg-white/5 text-secondary hover:bg-white/10 transition-all" data-tag="${tag}">${tag}</button>`).join('')
@@ -260,14 +341,14 @@ export function ImageStudio() {
                         </div>
                         
                         <div class="flex flex-col gap-2">
-                            <label class="text-[10px] font-bold text-muted uppercase tracking-wider">Enhanced Prompt</label>
+                            <label class="text-[10px] font-bold text-muted uppercase tracking-wider">${t('image.enhancedPrompt')}</label>
                             <div id="enhanced-prompt-display" class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-xs min-h-[40px]"></div>
                             <div class="flex gap-2">
                                 <button id="copy-enhanced-btn" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-white/5 text-secondary hover:bg-white/10 transition-all">
-                                    Copy
+                                    ${t('common.copy')}
                                 </button>
                                 <button id="use-enhanced-btn" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-primary text-black hover:shadow-glow transition-all">
-                                    Use in Generator
+                                    ${t('common.useInGenerator')}
                                 </button>
                             </div>
                         </div>
@@ -290,15 +371,15 @@ export function ImageStudio() {
     advancedPanel.innerHTML = `
         <div class="bg-[#111]/90 backdrop-blur-xl border border-white/10 rounded-2xl p-5 flex flex-col gap-4">
             <div class="flex items-center justify-between pb-3 border-b border-white/5">
-                <h3 class="text-sm font-bold text-white">Advanced Options</h3>
+                <h3 class="text-sm font-bold text-white">${t('image.advancedOptions')}</h3>
                 <button id="close-adv-btn" class="text-white/40 hover:text-white transition-colors">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
                 </button>
             </div>
-            
+
             <!-- Style Presets -->
             <div class="flex flex-col gap-2">
-                <label class="text-xs font-bold text-secondary uppercase tracking-wider">Style Preset</label>
+                <label class="text-xs font-bold text-secondary uppercase tracking-wider">${t('image.stylePreset')}</label>
                 <div class="flex gap-2 flex-wrap">
                     ${STYLE_PRESETS.map(s => `<button class="style-preset-btn px-3 py-1.5 rounded-lg text-xs font-bold bg-white/5 text-secondary hover:bg-white/10 transition-all" data-style="${s}">${s}</button>`).join('')}
                 </div>
@@ -306,9 +387,9 @@ export function ImageStudio() {
             
             <!-- Negative Prompt -->
             <div class="flex flex-col gap-2">
-                <label class="text-xs font-bold text-secondary uppercase tracking-wider">Negative Prompt</label>
-                <input type="text" id="negative-prompt-input" 
-                    placeholder="What to exclude from the image (e.g., blurry, distorted, watermark)"
+                <label class="text-xs font-bold text-secondary uppercase tracking-wider">${t('image.negPromptLabel')}</label>
+                <input type="text" id="negative-prompt-input"
+                    placeholder="${t('image.negPromptPlaceholder')}"
                     class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm placeholder:text-muted focus:outline-none focus:border-primary/50 transition-colors">
             </div>
             
@@ -316,7 +397,7 @@ export function ImageStudio() {
             <div class="flex gap-4 flex-wrap">
                 <div class="flex-1 min-w-[200px] flex flex-col gap-2">
                     <div class="flex items-center justify-between">
-                        <label class="text-xs font-bold text-secondary uppercase tracking-wider">Guidance Scale</label>
+                        <label class="text-xs font-bold text-secondary uppercase tracking-wider">${t('image.guidanceScale')}</label>
                         <span id="guidance-value" class="text-xs font-bold text-primary">7.5</span>
                     </div>
                     <input type="range" id="guidance-slider" min="1" max="20" step="0.5" value="7.5" 
@@ -325,7 +406,7 @@ export function ImageStudio() {
                 
                 <div class="flex-1 min-w-[200px] flex flex-col gap-2">
                     <div class="flex items-center justify-between">
-                        <label class="text-xs font-bold text-secondary uppercase tracking-wider">Steps</label>
+                        <label class="text-xs font-bold text-secondary uppercase tracking-wider">${t('image.steps')}</label>
                         <span id="steps-value" class="text-xs font-bold text-primary">25</span>
                     </div>
                     <input type="range" id="steps-slider" min="1" max="50" step="1" value="25" 
@@ -336,11 +417,11 @@ export function ImageStudio() {
             <!-- Seed -->
             <div class="flex flex-col gap-2">
                 <div class="flex items-center justify-between">
-                    <label class="text-xs font-bold text-secondary uppercase tracking-wider">Seed</label>
-                    <button id="randomize-seed-btn" class="text-xs font-bold text-primary hover:text-primary/80 transition-colors">Randomize</button>
+                    <label class="text-xs font-bold text-secondary uppercase tracking-wider">${t('image.seed')}</label>
+                    <button id="randomize-seed-btn" class="text-xs font-bold text-primary hover:text-primary/80 transition-colors">${t('common.randomize')}</button>
                 </div>
-                <input type="number" id="seed-input" 
-                    placeholder="-1 for random"
+                <input type="number" id="seed-input"
+                    placeholder="${t('image.seedPlaceholder')}"
                     value="-1"
                     class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm placeholder:text-muted focus:outline-none focus:border-primary/50 transition-colors">
             </div>
@@ -348,7 +429,7 @@ export function ImageStudio() {
             <!-- Batch Count -->
             <div class="flex flex-col gap-2">
                 <div class="flex items-center justify-between">
-                    <label class="text-xs font-bold text-secondary uppercase tracking-wider">Batch Count</label>
+                    <label class="text-xs font-bold text-secondary uppercase tracking-wider">${t('image.batchCount')}</label>
                     <span id="batch-value" class="text-xs font-bold text-primary">1</span>
                 </div>
                 <input type="range" id="batch-slider" min="1" max="4" step="1" value="1" 
@@ -358,16 +439,16 @@ export function ImageStudio() {
             <!-- Width & Height -->
             <div class="flex gap-4 flex-wrap">
                 <div class="flex-1 min-w-[120px] flex flex-col gap-2">
-                    <label class="text-xs font-bold text-secondary uppercase tracking-wider">Width</label>
-                    <input type="number" id="width-input" 
-                        placeholder="Auto"
+                    <label class="text-xs font-bold text-secondary uppercase tracking-wider">${t('image.width')}</label>
+                    <input type="number" id="width-input"
+                        placeholder="${t('image.widthPlaceholder')}"
                         value=""
                         class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm placeholder:text-muted focus:outline-none focus:border-primary/50 transition-colors">
                 </div>
                 <div class="flex-1 min-w-[120px] flex flex-col gap-2">
-                    <label class="text-xs font-bold text-secondary uppercase tracking-wider">Height</label>
-                    <input type="number" id="height-input" 
-                        placeholder="Auto"
+                    <label class="text-xs font-bold text-secondary uppercase tracking-wider">${t('image.height')}</label>
+                    <input type="number" id="height-input"
+                        placeholder="${t('image.heightPlaceholder')}"
                         value=""
                         class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm placeholder:text-muted focus:outline-none focus:border-primary/50 transition-colors">
                 </div>
@@ -376,27 +457,27 @@ export function ImageStudio() {
             <!-- Reference Strength (for I2I models) -->
             <div class="flex flex-col gap-2">
                 <div class="flex items-center justify-between">
-                    <label class="text-xs font-bold text-secondary uppercase tracking-wider">Reference Strength</label>
+                    <label class="text-xs font-bold text-secondary uppercase tracking-wider">${t('image.refStrength')}</label>
                     <span id="reference-strength-value" class="text-xs font-bold text-primary">50%</span>
                 </div>
                 <input type="range" id="reference-strength-slider" min="0" max="100" step="5" value="50" 
                     class="w-full h-2 bg-white/10 rounded-lg appearance-none cursor-pointer accent-primary">
-                <p class="text-xs text-muted">How much to preserve the reference image characteristics</p>
+                <p class="text-xs text-muted">${t('image.refStrengthNote')}</p>
             </div>
             
             <!-- LoRA Model Selection -->
             <div class="flex flex-col gap-2">
-                <label class="text-xs font-bold text-secondary uppercase tracking-wider">LoRA Model (Optional)</label>
-                <input type="text" id="lora-input" 
-                    placeholder="e.g., civitai:1642876@1864626"
+                <label class="text-xs font-bold text-secondary uppercase tracking-wider">${t('image.lora')}</label>
+                <input type="text" id="lora-input"
+                    placeholder="${t('image.loraPlaceholder')}"
                     class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm placeholder:text-muted focus:outline-none focus:border-primary/50 transition-colors">
                 <div class="flex items-center gap-2 mt-1">
-                    <label class="text-xs font-bold text-secondary">LoRA Weight:</label>
+                    <label class="text-xs font-bold text-secondary">${t('image.loraWeight')}</label>
                     <input type="number" id="lora-weight-input" 
                         value="1.0" min="0" max="4" step="0.1"
                         class="w-20 bg-white/5 border border-white/10 rounded-xl px-3 py-1.5 text-white text-sm focus:outline-none focus:border-primary/50 transition-colors">
                 </div>
-                <p class="text-xs text-muted">Enter a LoRA model ID from Civitai (format: civitai:id@version)</p>
+                <p class="text-xs text-muted">${t('image.loraNote')}</p>
             </div>
         </div>
     `;
@@ -406,7 +487,7 @@ export function ImageStudio() {
     const toggleAdvanced = () => {
         showAdvanced = !showAdvanced;
         advancedPanel.classList.toggle('hidden', !showAdvanced);
-        document.getElementById('advanced-btn-label').textContent = showAdvanced ? 'Less' : 'Advanced';
+        document.getElementById('advanced-btn-label').textContent = showAdvanced ? t('common.less') : t('common.advanced');
     };
     
     // Add tools panel and advanced panel to container first before accessing their elements
@@ -462,7 +543,7 @@ export function ImageStudio() {
         const tags = Array.from(enhanceSelectedTags).join(', ');
         const enhanced = [base, tags].filter(p => p).join(', ');
         if (enhancedPromptDisplay) {
-            enhancedPromptDisplay.textContent = enhanced || 'Your enhanced prompt will appear here...';
+            enhancedPromptDisplay.textContent = enhanced || t('image.enhancedPlaceholder');
             enhancedPromptDisplay.classList.toggle('text-muted', !enhanced);
         }
     };
@@ -495,10 +576,10 @@ export function ImageStudio() {
     if (copyEnhancedBtn) {
         copyEnhancedBtn.onclick = () => {
             const text = enhancedPromptDisplay?.textContent || '';
-            if (text && text !== 'Your enhanced prompt will appear here...') {
+            if (text && text !== t('image.enhancedPlaceholder')) {
                 navigator.clipboard.writeText(text);
-                copyEnhancedBtn.textContent = 'Copied!';
-                setTimeout(() => { copyEnhancedBtn.textContent = 'Copy'; }, 1500);
+                copyEnhancedBtn.textContent = t('common.copied');
+                setTimeout(() => { copyEnhancedBtn.textContent = t('common.copy'); }, 1500);
             }
         };
     }
@@ -508,7 +589,7 @@ export function ImageStudio() {
     if (useEnhancedBtn) {
         useEnhancedBtn.onclick = () => {
             const text = enhancedPromptDisplay?.textContent || '';
-            if (text && text !== 'Your enhanced prompt will appear here...') {
+            if (text && text !== t('image.enhancedPlaceholder')) {
                 textarea.value = text;
                 textarea.style.height = 'auto';
                 const maxHeight = window.innerWidth < 768 ? 150 : 250;
@@ -640,7 +721,7 @@ export function ImageStudio() {
                     <div class="px-2 pb-3 mb-2 border-b border-white/5 shrink-0">
                         <div class="flex items-center gap-3 bg-white/5 rounded-xl px-4 py-2.5 border border-white/5 focus-within:border-primary/50 transition-colors">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" class="text-muted"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
-                            <input type="text" id="model-search" placeholder="Search models..." class="bg-transparent border-none text-xs text-white focus:ring-0 w-full p-0">
+                            <input type="text" id="model-search" placeholder="${t('common.searchModels')}" class="bg-transparent border-none text-xs text-white focus:ring-0 w-full p-0">
                         </div>
                     </div>
                     <div class="text-[10px] font-bold text-secondary uppercase tracking-widest px-3 py-2 shrink-0">Available models</div>
@@ -651,6 +732,48 @@ export function ImageStudio() {
 
             const renderModels = (filter = '') => {
                 list.innerHTML = '';
+
+                if (useLocalModel) {
+                    // ── Local model list (Wan2GP image-capable models only) ───
+                    const filtered = LOCAL_IMAGE_MODELS.filter(m =>
+                        m.name.toLowerCase().includes(filter.toLowerCase()) ||
+                        m.id.toLowerCase().includes(filter.toLowerCase())
+                    );
+                    if (filtered.length === 0) {
+                        list.innerHTML = `<div class="text-xs text-muted text-center py-4">${t('common.noResults')}</div>`;
+                        return;
+                    }
+                    filtered.forEach(m => {
+                        const item = document.createElement('div');
+                        item.className = `flex items-center justify-between p-3.5 hover:bg-white/5 rounded-2xl cursor-pointer transition-all border border-transparent hover:border-white/5 ${selectedLocalModel === m.id ? 'bg-white/5 border-white/5' : ''}`;
+                        item.innerHTML = `
+                            <div class="flex items-center gap-3.5">
+                                <div class="w-10 h-10 ${m.featured ? 'bg-primary/10 text-primary' : 'bg-green-500/10 text-green-400'} border border-white/5 rounded-xl flex items-center justify-center font-black text-sm shadow-inner uppercase">${m.featured ? '⚡' : m.name.charAt(0)}</div>
+                                <div class="flex flex-col gap-0.5">
+                                    <div class="flex items-center gap-1.5">
+                                        <span class="text-xs font-bold text-white tracking-tight">${m.name}</span>
+                                        ${m.featured ? '<span class="text-[9px] font-black px-1 py-0.5 rounded bg-primary/20 text-primary">FEATURED</span>' : ''}
+                                    </div>
+                                    <span class="text-[10px] text-muted">${m.type.toUpperCase()} · ${m.family}</span>
+                                </div>
+                            </div>
+                            ${selectedLocalModel === m.id ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="4"><polyline points="20 6 9 17 4 12"/></svg>' : ''}
+                        `;
+                        item.onclick = (e) => {
+                            e.stopPropagation();
+                            selectedLocalModel = m.id;
+                            document.getElementById('model-btn-label').textContent = m.name;
+                            selectedAr = m.aspectRatios[0];
+                            document.getElementById('ar-btn-label').textContent = selectedAr;
+                            qualityBtn.style.display = 'none';
+                            closeDropdown();
+                        };
+                        list.appendChild(item);
+                    });
+                    return;
+                }
+
+                // ── Remote (API) model list ───────────────────────────────────
                 const filtered = getCurrentModels().filter(m => m.name.toLowerCase().includes(filter.toLowerCase()) || m.id.toLowerCase().includes(filter.toLowerCase()));
 
                 filtered.forEach(m => {
@@ -663,7 +786,7 @@ export function ImageStudio() {
                                 <span class="text-xs font-bold text-white tracking-tight">${m.name}</span>
                              </div>
                         </div>
-                        ${selectedModel === m.id ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#d9ff00" stroke-width="4"><polyline points="20 6 9 17 4 12"/></svg>' : ''}
+                        ${selectedModel === m.id ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="4"><polyline points="20 6 9 17 4 12"/></svg>' : ''}
                     `;
                     item.onclick = (e) => {
                         e.stopPropagation();
@@ -714,7 +837,7 @@ export function ImageStudio() {
                         </div>
                         <span class="text-xs font-bold text-white opacity-80 group-hover:opacity-100 transition-opacity">${r}</span>
                     </div>
-                     ${selectedAr === r ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#d9ff00" stroke-width="4"><polyline points="20 6 9 17 4 12"/></svg>' : ''}
+                     ${selectedAr === r ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="4"><polyline points="20 6 9 17 4 12"/></svg>' : ''}
                 `;
                 item.onclick = (e) => {
                     e.stopPropagation();
@@ -738,7 +861,7 @@ export function ImageStudio() {
                 item.className = 'flex items-center justify-between p-3.5 hover:bg-white/5 rounded-2xl cursor-pointer transition-all group';
                 item.innerHTML = `
                     <span class="text-xs font-bold text-white opacity-80 group-hover:opacity-100">${opt}</span>
-                     ${document.getElementById('quality-btn-label').textContent === opt ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#d9ff00" stroke-width="4"><polyline points="20 6 9 17 4 12"/></svg>' : ''}
+                     ${document.getElementById('quality-btn-label').textContent === opt ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="4"><polyline points="20 6 9 17 4 12"/></svg>' : ''}
                 `;
                 item.onclick = (e) => {
                     e.stopPropagation();
@@ -817,7 +940,7 @@ export function ImageStudio() {
 
     const historyLabel = document.createElement('div');
     historyLabel.className = 'text-[9px] font-bold text-muted uppercase tracking-widest mb-2 rotate-0';
-    historyLabel.textContent = 'History';
+    historyLabel.textContent = t('common.history');
     historySidebar.appendChild(historyLabel);
 
     const historyList = document.createElement('div');
@@ -843,15 +966,15 @@ export function ImageStudio() {
 
     const regenerateBtn = document.createElement('button');
     regenerateBtn.className = 'bg-white/10 hover:bg-white/20 px-6 py-2.5 rounded-2xl text-xs font-bold transition-all border border-white/5 backdrop-blur-lg text-white';
-    regenerateBtn.textContent = '↻ Regenerate';
+    regenerateBtn.textContent = t('common.regenerate');
 
     const downloadBtn = document.createElement('button');
     downloadBtn.className = 'bg-primary text-black px-6 py-2.5 rounded-2xl text-xs font-bold transition-all shadow-glow active:scale-95';
-    downloadBtn.textContent = '↓ Download';
+    downloadBtn.textContent = t('common.download');
 
     const newPromptBtn = document.createElement('button');
     newPromptBtn.className = 'bg-white/10 hover:bg-white/20 px-6 py-2.5 rounded-2xl text-xs font-bold transition-all border border-white/5 backdrop-blur-lg text-white';
-    newPromptBtn.textContent = '+ New';
+    newPromptBtn.textContent = t('common.newItem');
 
     canvasControls.appendChild(regenerateBtn);
     canvasControls.appendChild(downloadBtn);
@@ -1024,7 +1147,7 @@ export function ImageStudio() {
         const resetResolutions = getResolutionsForModel(selectedModel);
         qualityBtn.style.display = resetResolutions.length > 0 ? 'flex' : 'none';
         if (resetResolutions.length > 0) document.getElementById('quality-btn-label').textContent = resetResolutions[0];
-        textarea.placeholder = 'Describe the image you want to create';
+        textarea.placeholder = t('image.placeholder');
         textarea.focus();
     };
 
@@ -1045,6 +1168,75 @@ export function ImageStudio() {
             }
         }
 
+        // ── Local inference path ──────────────────────────────────────────────
+        if (useLocalModel) {
+            const lm = getLocalModelById(selectedLocalModel);
+            if (!lm) { alert('No local model selected.'); return; }
+
+            hero.classList.add('opacity-0', 'scale-95', '-translate-y-10', 'pointer-events-none');
+            generateBtn.disabled = true;
+            generateBtn.innerHTML = `<span class="animate-spin inline-block mr-2 text-black">◌</span> ${t('common.generating')}`;
+
+            const progressWrap = document.getElementById('local-progress-wrap');
+            const progressFill = document.getElementById('local-progress-fill');
+            const progressPct = document.getElementById('local-progress-pct');
+            progressWrap.classList.remove('hidden');
+            progressWrap.classList.add('flex');
+
+            const unsub = localAI.onProgress(({ progress, status, message }) => {
+                const pct = Math.round((progress ?? 0) * 100);
+                const label = message || (status === 'starting' ? 'Starting...' : `${pct}%`);
+                if (progressFill) progressFill.style.width = `${pct}%`;
+                if (progressPct) progressPct.textContent = label;
+                generateBtn.innerHTML = `<span class="animate-spin inline-block mr-2 text-black">◌</span> ${label}`;
+            });
+
+            let hadError = false;
+            try {
+                const res = await localAI.generate({
+                    model: selectedLocalModel,
+                    prompt,
+                    negative_prompt: negativePrompt || undefined,
+                    aspect_ratio: selectedAr,
+                    steps: steps,
+                    guidance_scale: guidanceScale,
+                    seed,
+                });
+                unsub();
+                progressWrap.classList.replace('flex', 'hidden');
+                progressWrap.classList.add('hidden');
+
+                if (!res?.url) throw new Error('No output returned from local generation');
+                if (res.mediaType === 'video') {
+                    throw new Error('This model produces video — use the Video studio instead.');
+                }
+                addToHistory({
+                    id: Date.now().toString(),
+                    url: res.url,
+                    prompt,
+                    model: `local:${selectedLocalModel}`,
+                    aspect_ratio: selectedAr,
+                    seed: res.seed,
+                    timestamp: new Date().toISOString()
+                });
+                showImageInCanvas(res.url);
+            } catch (e) {
+                hadError = true;
+                unsub();
+                progressWrap.classList.add('hidden');
+                console.error('[Local] generation error:', e);
+                hero.classList.remove('opacity-0', 'scale-95', '-translate-y-10', 'pointer-events-none');
+                console.error('[Local] full error:', e.message);
+                generateBtn.innerHTML = `Error: ${e.message.slice(0, 120)}`;
+                setTimeout(() => { generateBtn.innerHTML = t('common.generate'); }, 6000);
+            } finally {
+                generateBtn.disabled = false;
+                if (!hadError) generateBtn.innerHTML = t('common.generate');
+            }
+            return;
+        }
+
+        // ── Remote API path ───────────────────────────────────────────────────
         const apiKey = localStorage.getItem('muapi_key');
         if (!apiKey) {
             AuthModal(() => generateBtn.click());
@@ -1117,12 +1309,12 @@ export function ImageStudio() {
             hero.classList.remove('opacity-0', 'scale-95', '-translate-y-10', 'pointer-events-none');
             generateBtn.innerHTML = `Error: ${e.message.slice(0, 60)}`;
             setTimeout(() => {
-                generateBtn.innerHTML = `Generate ✨`;
+                generateBtn.innerHTML = t('common.generate');
             }, 4000);
         } finally {
             generateBtn.disabled = false;
             // Only reset the label on success; the catch timeout handles the error case
-            if (!hadError) generateBtn.innerHTML = `Generate ✨`;
+            if (!hadError) generateBtn.innerHTML = t('common.generate');
         }
     };
 

@@ -3,7 +3,7 @@ import { getModelById, getVideoModelById, getI2IModelById, getI2VModelById, getV
 export class MuapiClient {
     constructor() {
         // Ideally user provides this in settings
-        this.baseUrl = import.meta.env.DEV ? '' : 'https://api.muapi.ai';
+        this.baseUrl = (typeof import.meta !== 'undefined' && import.meta.env?.DEV) ? '' : 'https://api.muapi.ai';
     }
 
     getKey() {
@@ -318,11 +318,31 @@ export class MuapiClient {
 
         // Place image in the correct field for this model
         const imageField = modelInfo?.imageField || 'image_url';
-        if (params.image_url) {
+        if (params.images_list && params.images_list.length > 0) {
+            if (imageField === 'images_list') {
+                finalPayload.images_list = params.images_list;
+            } else {
+                finalPayload[imageField] = params.images_list[0];
+            }
+        } else if (params.image_url) {
             if (imageField === 'images_list') {
                 finalPayload.images_list = [params.image_url];
             } else {
                 finalPayload[imageField] = params.image_url;
+            }
+        }
+
+        // Optional end-frame image — only for models declaring lastImageField.
+        // Server-side param name varies (last_image vs end_image_url).
+        const lastImageField = modelInfo?.lastImageField;
+        if (lastImageField && params.last_image) {
+            if (lastImageField === 'images_list') {
+                if (!finalPayload.images_list) finalPayload.images_list = [];
+                if (finalPayload.images_list.indexOf(params.last_image) === -1) {
+                    finalPayload.images_list.push(params.last_image);
+                }
+            } else {
+                finalPayload[lastImageField] = params.last_image;
             }
         }
 
@@ -400,10 +420,14 @@ export class MuapiClient {
     }
 
     /**
-     * Processes a video through a Video-to-Video model (e.g. watermark remover).
+     * Processes a video through a Video-to-Video model.
+     * Single-input tools (e.g. watermark remover) only need `video_url`.
+     * Motion-control models additionally need `image_url` and (often) `prompt`.
      * @param {Object} params
      * @param {string} params.model - v2vModel id
      * @param {string} params.video_url - The uploaded video URL
+     * @param {string} [params.image_url] - Reference image URL (motion-control models)
+     * @param {string} [params.prompt] - Motion description (motion-control models)
      */
     async processV2V(params) {
         const key = this.getKey();
@@ -413,6 +437,13 @@ export class MuapiClient {
 
         const videoField = modelInfo?.videoField || 'video_url';
         const finalPayload = { [videoField]: params.video_url };
+
+        if (modelInfo?.imageField && params.image_url) {
+            finalPayload[modelInfo.imageField] = params.image_url;
+        }
+        if (modelInfo?.hasPrompt && params.prompt) {
+            finalPayload.prompt = params.prompt;
+        }
 
         console.log('[Muapi] V2V Request:', url);
         console.log('[Muapi] V2V Payload:', finalPayload);
@@ -471,7 +502,7 @@ export class MuapiClient {
         if (params.audio_url) finalPayload.audio_url = params.audio_url;
         if (params.image_url) finalPayload.image_url = params.image_url;
         if (params.video_url) finalPayload.video_url = params.video_url;
-        if (params.prompt) finalPayload.prompt = params.prompt;
+        if (modelInfo?.hasPrompt) finalPayload.prompt = params.prompt || '';
         if (params.resolution) finalPayload.resolution = params.resolution;
         if (params.seed !== undefined && params.seed !== -1) finalPayload.seed = params.seed;
 

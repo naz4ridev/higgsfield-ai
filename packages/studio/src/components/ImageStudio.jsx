@@ -12,6 +12,9 @@ import {
   getResolutionsForI2IModel,
   getQualityFieldForI2IModel,
   getMaxImagesForI2IModel,
+  getEffectsForI2IModel,
+  getDefaultEffectForI2IModel,
+  getI2IModelById,
 } from "../models.js";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -35,7 +38,7 @@ async function downloadImage(url, filename) {
 
 // ─── UploadButton (inline picker) ───────────────────────────────────────────
 
-function UploadButton({ apiKey, maxImages, onSelect, onClear, initialUrls = [] }) {
+function UploadButton({ apiKey, maxImages, onSelect, onClear, initialUrls = [], label = null }) {
   const [panelOpen, setPanelOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [selectedEntries, setSelectedEntries] = useState([]); // [{url, thumbnail}]
@@ -242,9 +245,30 @@ function UploadButton({ apiKey, maxImages, onSelect, onClear, initialUrls = [] }
     let badge;
     if (uploading && !hasSelection) {
       badge = (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 z-10">
-          <div className="w-4 h-4 rounded-full border border-primary/30 border-t-primary animate-spin mb-0.5" />
-          <span className="text-[8px] font-black text-primary">
+        <div className="flex flex-col items-center justify-center w-full h-full absolute inset-0 bg-black/80 z-20 backdrop-blur-[2px]">
+          <svg className="w-8 h-8 -rotate-90">
+            <circle
+              cx="16"
+              cy="16"
+              r="14"
+              stroke="currentColor"
+              strokeWidth="2"
+              fill="transparent"
+              className="text-white/10"
+            />
+            <circle
+              cx="16"
+              cy="16"
+              r="14"
+              stroke="currentColor"
+              strokeWidth="2"
+              fill="transparent"
+              strokeDasharray={88}
+              strokeDashoffset={88 - (88 * lastUploadProgress) / 100}
+              className="text-primary transition-all duration-300"
+            />
+          </svg>
+          <span className="absolute text-[9px] font-black text-primary leading-none">
             {lastUploadProgress}%
           </span>
         </div>
@@ -360,15 +384,14 @@ function UploadButton({ apiKey, maxImages, onSelect, onClear, initialUrls = [] }
     );
   }
 
+  const defaultLabel = isMulti ? `Add up to ${maxImages} images` : "Reference image";
   const triggerTitle = hasSelection
     ? count > 1
       ? `${count} of ${maxImages} images selected — click to manage`
       : isMulti
         ? `1 image selected — click to add more (up to ${maxImages})`
-        : "Reference image"
-    : isMulti
-      ? `Add up to ${maxImages} images`
-      : "Reference image";
+        : label || "Reference image"
+    : label || defaultLabel;
 
   return (
     <div className="relative">
@@ -658,7 +681,7 @@ function ModelDropdown({ models, selectedModel, onSelect, onClose }) {
                 height="16"
                 viewBox="0 0 24 24"
                 fill="none"
-                stroke="#d9ff00"
+                stroke="#22d3ee"
                 strokeWidth="4"
               >
                 <polyline points="20 6 9 17 4 12" />
@@ -699,7 +722,7 @@ function SimpleDropdown({ title, options, selected, onSelect, onClose }) {
                 height="16"
                 viewBox="0 0 24 24"
                 fill="none"
-                stroke="#d9ff00"
+                stroke="#22d3ee"
                 strokeWidth="4"
               >
                 <polyline points="20 6 9 17 4 12" />
@@ -718,6 +741,8 @@ export default function ImageStudio({
   apiKey,
   onGenerationComplete,
   historyItems,
+  droppedFiles,
+  onFilesHandled,
 }) {
   const PERSIST_KEY = "hg_image_studio_persistent";
 
@@ -732,11 +757,13 @@ export default function ImageStudio({
     const resolutions = getResolutionsForModel(t2iModels[0].id);
     return resolutions[0] || null;
   });
+  const [selectedEffect, setSelectedEffect] = useState("");
   const [maxImages, setMaxImages] = useState(1);
 
   // ── Prompt / upload state ───────────────────────────────────────────────
   const [prompt, setPrompt] = useState("");
   const [uploadedImageUrls, setUploadedImageUrls] = useState([]);
+  const [swapImageUrl, setSwapImageUrl] = useState(null);
 
   // ── UI state ────────────────────────────────────────────────────────────
   const [dropdownOpen, setDropdownOpen] = useState(null); // 'model' | 'ar' | 'quality' | null
@@ -747,6 +774,7 @@ export default function ImageStudio({
   // ── Canvas / history state ──────────────────────────────────────────────
   const [currentImageUrl, setCurrentImageUrl] = useState(null);
   const [activeHistoryIdx, setActiveHistoryIdx] = useState(0);
+  const [batchSize, setBatchSize] = useState(1);
   const [localHistory, setLocalHistory] = useState([]); // [{id,url,prompt,model,aspect_ratio,timestamp}]
 
   // Use prop history if provided, otherwise local
@@ -780,14 +808,24 @@ export default function ImageStudio({
         if (data.selectedModelName) setSelectedModelName(data.selectedModelName);
         if (data.selectedAr) setSelectedAr(data.selectedAr);
         if (data.selectedQuality) setSelectedQuality(data.selectedQuality);
+        if (data.selectedEffect) setSelectedEffect(data.selectedEffect);
         if (data.maxImages) setMaxImages(data.maxImages);
         if (data.prompt) setPrompt(data.prompt);
         if (data.uploadedImageUrls) setUploadedImageUrls(data.uploadedImageUrls);
+        if (data.batchSize) setBatchSize(data.batchSize);
         if (data.localHistory) setLocalHistory(data.localHistory);
       }
     } catch (err) {
       console.warn("Failed to load ImageStudio persistence:", err);
     }
+  }, []);
+
+  // ── Adjust height on load ────────────────────────────────────────────────
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      handleTextareaInput();
+    }, 150);
+    return () => clearTimeout(timer);
   }, []);
 
   // ── Persistence: Save ────────────────────────────────────────────────────
@@ -800,9 +838,11 @@ export default function ImageStudio({
           selectedModelName,
           selectedAr,
           selectedQuality,
+          selectedEffect,
           maxImages,
           prompt,
           uploadedImageUrls,
+          batchSize,
           localHistory,
         };
         localStorage.setItem(PERSIST_KEY, JSON.stringify(state));
@@ -817,11 +857,61 @@ export default function ImageStudio({
     selectedModelName,
     selectedAr,
     selectedQuality,
+    selectedEffect,
     maxImages,
     prompt,
     uploadedImageUrls,
+    batchSize,
     localHistory,
   ]);
+
+  const processDroppedImages = async (files) => {
+    const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
+    const tooLarge = files.filter((f) => f.size > MAX_IMAGE_SIZE);
+    if (tooLarge.length > 0) {
+      alert(
+        `The following images are too large (max 10MB): ${tooLarge.map((f) => f.name).join(", ")}`
+      );
+      return;
+    }
+
+    setGenerating(true); // Show as generating/busy
+    try {
+      const toUpload =
+        maxImages === 1 ? files.slice(0, 1) : files.slice(0, maxImages);
+      const urls = await Promise.all(
+        toUpload.map(async (file) => {
+          try {
+            return await uploadFile(apiKey, file);
+          } catch (err) {
+            console.error(
+              "[ImageStudio] Drop upload failed for",
+              file.name,
+              err
+            );
+            throw err;
+          }
+        })
+      );
+
+      handleUploadSelect({ urls });
+    } catch (err) {
+      alert(`Image upload failed: ${err.message}`);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  // ── Handle Dropped Files ────────────────────────────────────────────────
+  useEffect(() => {
+    if (droppedFiles && droppedFiles.length > 0) {
+      const imageFiles = droppedFiles.filter(f => f.type.startsWith('image/'));
+      if (imageFiles.length > 0) {
+        processDroppedImages(imageFiles);
+      }
+      onFilesHandled?.();
+    }
+  }, [droppedFiles, onFilesHandled, processDroppedImages]);
 
   // ── Derived: current model lists & helpers ───────────────────────────────
   const currentModels = imageMode ? i2iModels : t2iModels;
@@ -835,6 +925,8 @@ export default function ImageStudio({
     ? getQualityFieldForI2IModel(selectedModelId)
     : getQualityFieldForModel(selectedModelId);
   const showQualityBtn = currentResolutions.length > 0;
+  const currentEffects = imageMode ? getEffectsForI2IModel(selectedModelId) : [];
+  const showEffectBtn = currentEffects.length > 0;
 
   // ── Textarea auto-resize ─────────────────────────────────────────────────
   const handleTextareaInput = () => {
@@ -855,11 +947,13 @@ export default function ImageStudio({
         const firstI2I = i2iModels[0];
         const ars = getAspectRatiosForI2IModel(firstI2I.id);
         const resolutions = getResolutionsForI2IModel(firstI2I.id);
+        const effects = getEffectsForI2IModel(firstI2I.id);
         setImageMode(true);
         setSelectedModelId(firstI2I.id);
         setSelectedModelName(firstI2I.name);
         setSelectedAr(ars[0] || "1:1");
         setSelectedQuality(resolutions[0] || null);
+        setSelectedEffect(effects.length > 0 ? (getDefaultEffectForI2IModel(firstI2I.id) || effects[0]) : "");
         setMaxImages(getMaxImagesForI2IModel(firstI2I.id));
       }
     },
@@ -876,6 +970,7 @@ export default function ImageStudio({
     setSelectedModelName(firstT2I.name);
     setSelectedAr(ars[0] || "1:1");
     setSelectedQuality(resolutions[0] || null);
+    setSelectedEffect("");
     setMaxImages(1);
   }, []);
 
@@ -891,7 +986,14 @@ export default function ImageStudio({
     setSelectedModelName(m.name);
     setSelectedAr(ars[0] || "1:1");
     setSelectedQuality(resolutions[0] || null);
-    if (imageMode) setMaxImages(getMaxImagesForI2IModel(m.id));
+    setSwapImageUrl(null);
+    if (imageMode) {
+      setMaxImages(getMaxImagesForI2IModel(m.id));
+      const effects = getEffectsForI2IModel(m.id);
+      setSelectedEffect(effects.length > 0 ? (getDefaultEffectForI2IModel(m.id) || effects[0]) : "");
+    } else {
+      setSelectedEffect("");
+    }
   };
 
   // ── History helpers ──────────────────────────────────────────────────────
@@ -920,6 +1022,7 @@ export default function ImageStudio({
     setSelectedModelName(firstT2I.name);
     setSelectedAr(ars[0] || "1:1");
     setSelectedQuality(resolutions[0] || null);
+    setSelectedEffect("");
     setMaxImages(1);
   };
 
@@ -930,6 +1033,11 @@ export default function ImageStudio({
     if (imageMode) {
       if (uploadedImageUrls.length === 0) {
         alert("Please upload a reference image first.");
+        return;
+      }
+      const modelInfo = getI2IModelById(selectedModelId);
+      if (modelInfo?.swapField && !swapImageUrl) {
+        alert("Please upload a swap face image.");
         return;
       }
     } else {
@@ -943,50 +1051,55 @@ export default function ImageStudio({
     setGenerateError(null);
 
     try {
-      let res;
-      if (imageMode) {
-        const genParams = {
-          model: selectedModelId,
-          images_list: uploadedImageUrls,
-          image_url: uploadedImageUrls[0],
-          aspect_ratio: selectedAr,
-        };
-        if (prompt.trim()) genParams.prompt = prompt.trim();
-        if (currentQualityField && selectedQuality) {
-          genParams[currentQualityField] = selectedQuality;
-        }
-        res = await generateI2I(apiKey, genParams);
-      } else {
-        const genParams = {
-          model: selectedModelId,
-          prompt: prompt.trim(),
-          aspect_ratio: selectedAr,
-        };
-        if (currentQualityField && selectedQuality) {
-          genParams[currentQualityField] = selectedQuality;
-        }
-        res = await generateImage(apiKey, genParams);
-      }
+      const results = await Promise.all(
+        Array.from({ length: batchSize }).map(async () => {
+          if (imageMode) {
+            const genParams = {
+              model: selectedModelId,
+              images_list: uploadedImageUrls,
+              image_url: uploadedImageUrls[0],
+              aspect_ratio: selectedAr,
+            };
+            if (swapImageUrl) genParams.swap_url = swapImageUrl;
+            if (prompt.trim()) genParams.prompt = prompt.trim();
+            if (currentQualityField && selectedQuality) {
+              genParams[currentQualityField] = selectedQuality;
+            }
+            if (showEffectBtn && selectedEffect) genParams.name = selectedEffect;
+            return await generateI2I(apiKey, genParams);
+          } else {
+            const genParams = {
+              model: selectedModelId,
+              prompt: prompt.trim(),
+              aspect_ratio: selectedAr,
+            };
+            if (currentQualityField && selectedQuality) {
+              genParams[currentQualityField] = selectedQuality;
+            }
+            return await generateImage(apiKey, genParams);
+          }
+        })
+      );
 
-      if (res && res.url) {
-        const entry = {
-          id: res.id || Date.now().toString(),
-          url: res.url,
-          prompt: prompt.trim(),
-          model: selectedModelId,
-          aspect_ratio: selectedAr,
-          timestamp: new Date().toISOString(),
-        };
-        addToHistory(entry);
-        onGenerationComplete?.({
-          url: res.url,
-          model: selectedModelId,
-          prompt: prompt.trim(),
-          type: "image",
-        });
-      } else {
-        throw new Error("No image URL returned by API");
-      }
+      results.forEach((res) => {
+        if (res && res.url) {
+          const entry = {
+            id: res.id || Math.random().toString(36).substring(7),
+            url: res.url,
+            prompt: prompt.trim(),
+            model: selectedModelId,
+            aspect_ratio: selectedAr,
+            timestamp: new Date().toISOString(),
+          };
+          addToHistory(entry);
+          onGenerationComplete?.({
+            url: res.url,
+            model: selectedModelId,
+            prompt: prompt.trim(),
+            type: "image",
+          });
+        }
+      });
     } catch (e) {
       console.error("[ImageStudio] Generation failed:", e);
       setGenerateError(e.message.slice(0, 80));
@@ -1014,7 +1127,7 @@ export default function ImageStudio({
             {history.map((entry, idx) => (
               <div
                 key={entry.id || idx}
-                className="relative group rounded-2xl overflow-hidden border border-white/10 bg-[#0a0a0a] shadow-xl hover:border-primary/50 transition-all duration-300 flex flex-col"
+                className="relative group rounded-lg overflow-hidden border border-white/10 bg-[#0a0a0a] shadow-xl hover:border-primary/50 transition-all duration-300 flex flex-col"
               >
                 <img
                   src={entry.url}
@@ -1123,6 +1236,16 @@ export default function ImageStudio({
               onClear={handleUploadClear}
               initialUrls={uploadedImageUrls}
             />
+            {imageMode && getI2IModelById(selectedModelId)?.swapField && (
+              <UploadButton
+                apiKey={apiKey}
+                maxImages={1}
+                onSelect={({ urls }) => setSwapImageUrl(urls[0] || null)}
+                onClear={() => setSwapImageUrl(null)}
+                initialUrls={swapImageUrl ? [swapImageUrl] : []}
+                label="Swap Face"
+              />
+            )}
             <div className="flex-1 flex flex-col gap-2">
               <textarea
                 ref={textareaRef}
@@ -1150,10 +1273,10 @@ export default function ImageStudio({
                   }}
                   className="flex items-center gap-2 px-3 py-2 bg-white/[0.03] hover:bg-white/[0.06] rounded-md transition-all border border-white/[0.03] group whitespace-nowrap"
                 >
-                  <div className="w-4 h-4 bg-[#d9ff00] rounded flex items-center justify-center">
+                  <div className="w-4 h-4 bg-[#22d3ee] rounded flex items-center justify-center">
                     <span className="text-[9px] font-bold text-black uppercase">G</span>
                   </div>
-                  <span className="text-xs font-semibold text-white/70 group-hover:text-[#d9ff00] transition-colors">
+                  <span className="text-xs font-semibold text-white/70 group-hover:text-[#22d3ee] transition-colors">
                     {selectedModelName}
                   </span>
                   <svg
@@ -1198,7 +1321,7 @@ export default function ImageStudio({
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="opacity-40 text-white">
                     <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
                   </svg>
-                  <span className="text-[11px] font-semibold text-white/70 group-hover:text-[#d9ff00] transition-colors">
+                  <span className="text-[11px] font-semibold text-white/70 group-hover:text-[#22d3ee] transition-colors">
                     {selectedAr}
                   </span>
                 </button>
@@ -1206,7 +1329,7 @@ export default function ImageStudio({
                 {dropdownOpen === "ar" && (
                   <div
                     onClick={(e) => e.stopPropagation()}
-                    className="absolute bottom-[calc(100%+12px)] left-0 z-50 bg-[#0a0a0a] rounded-md p-3 shadow-2xl border border-white/10 min-w-[160px]"
+                    className="absolute bottom-[calc(100%+12px)] left-0 z-50 bg-[#0a0a0a] rounded-md p-3 max-h-[40vh] overflow-y-auto custom-scrollbar shadow-2xl border border-white/10 min-w-[160px]"
                   >
                     <SimpleDropdown
                       title="Aspect Ratio"
@@ -1228,12 +1351,12 @@ export default function ImageStudio({
                       e.stopPropagation();
                       setDropdownOpen((o) => (o === "quality" ? null : "quality"));
                     }}
-                    className="flex items-center gap-2 px-3 py-2 bg-white/[0.03] hover:bg-white/[0.06] rounded-xl transition-all border border-white/[0.03] group whitespace-nowrap"
+                    className="flex items-center gap-2 px-3 py-2 bg-white/[0.03] hover:bg-white/[0.06] rounded-md transition-all border border-white/[0.03] group whitespace-nowrap"
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="opacity-40 text-white">
                       <path d="M6 2L3 6v15a2 2 0 002 2h14a2 2 0 002-2V6l-3-4H6z" />
                     </svg>
-                    <span className="text-[11px] font-semibold text-white/70 group-hover:text-[#d9ff00] transition-colors">
+                    <span className="text-[11px] font-semibold text-white/70 group-hover:text-[#22d3ee] transition-colors">
                       {selectedQuality || currentResolutions[0]}
                     </span>
                   </button>
@@ -1241,7 +1364,7 @@ export default function ImageStudio({
                   {dropdownOpen === "quality" && (
                     <div
                       onClick={(e) => e.stopPropagation()}
-                      className="absolute bottom-[calc(100%+12px)] left-0 z-50 bg-[#0a0a0a] rounded-[1.5rem] p-3 shadow-2xl border border-white/[0.05] min-w-[160px]"
+                      className="absolute bottom-[calc(100%+12px)] left-0 z-50 bg-[#0a0a0a] rounded-md p-3 max-h-[40vh] overflow-y-auto custom-scrollbar shadow-2xl border border-white/[0.05] min-w-[160px]"
                     >
                       <SimpleDropdown
                         title="Resolution"
@@ -1254,6 +1377,60 @@ export default function ImageStudio({
                   )}
                 </div>
               )}
+
+              {/* Effect type button */}
+              {showEffectBtn && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDropdownOpen((o) => (o === "effect" ? null : "effect"));
+                    }}
+                    className="flex items-center gap-2 px-3 py-2 bg-white/[0.03] hover:bg-white/[0.06] rounded-md transition-all border border-white/[0.03] group whitespace-nowrap"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="opacity-40 text-white">
+                      <path d="M5 3l14 9-14 9V3z" />
+                    </svg>
+                    <span className="text-[11px] font-semibold text-white/70 group-hover:text-[#22d3ee] transition-colors max-w-[140px] truncate">
+                      {selectedEffect || "Effect"}
+                    </span>
+                  </button>
+
+                  {dropdownOpen === "effect" && (
+                    <div
+                      onClick={(e) => e.stopPropagation()}
+                      className="absolute bottom-[calc(100%+12px)] left-0 z-50 bg-[#0a0a0a] rounded-md p-3 max-h-[40vh] overflow-y-auto custom-scrollbar shadow-2xl border border-white/[0.05] min-w-[200px]"
+                    >
+                      <SimpleDropdown
+                        title="Effect Type"
+                        options={currentEffects}
+                        selected={selectedEffect}
+                        onSelect={(val) => setSelectedEffect(val)}
+                        onClose={() => setDropdownOpen(null)}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Batch size selector */}
+              <div className="flex items-center gap-1 bg-white/[0.03] rounded-md p-1 border border-white/[0.03]">
+                {[1, 2, 3, 4].map((num) => (
+                  <button
+                    key={num}
+                    type="button"
+                    onClick={() => setBatchSize(num)}
+                    className={`w-7 h-7 flex items-center justify-center rounded-md text-[10px] font-black transition-all ${
+                      batchSize === num
+                        ? "bg-[#22d3ee] text-black shadow-lg shadow-[#22d3ee]/20"
+                        : "text-white/40 hover:text-white/80 hover:bg-white/5"
+                    }`}
+                  >
+                    {num}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Generate button */}
@@ -1261,7 +1438,7 @@ export default function ImageStudio({
               type="button"
               onClick={handleGenerate}
               disabled={generating}
-              className="bg-[#d9ff00] text-black px-4 py-2 rounded-md font-medium text-sm hover:bg-[#e5ff33] hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-2 w-full sm:w-auto shadow-lg shadow-[#d9ff00]/10 disabled:opacity-50 disabled:cursor-not-allowed z-10"
+              className="bg-[#22d3ee] text-black px-4 py-2 rounded-md font-medium text-sm hover:bg-[#e5ff33] hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-2 w-full sm:w-auto shadow-lg shadow-[#22d3ee]/10 disabled:opacity-50 disabled:cursor-not-allowed z-10"
             >
               {generating ? (
                 <>

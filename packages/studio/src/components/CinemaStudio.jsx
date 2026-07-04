@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { generateImage } from "../muapi.js";
+import { generateImage, uploadFile } from "../muapi.js";
 
 // ─── Constants (inlined from promptUtils) ───────────────────────────────────
 
@@ -111,14 +111,6 @@ function Dropdown({ items, selected, onSelect, triggerRef, onClose }) {
   const [position, setPosition] = useState({ bottom: 0, left: 0 });
 
   useEffect(() => {
-    if (triggerRef.current) {
-      const rect = triggerRef.current.getBoundingClientRect();
-      setPosition({
-        bottom: window.innerHeight - rect.top + 8,
-        left: rect.left,
-      });
-    }
-
     const handler = (e) => {
       if (
         menuRef.current &&
@@ -129,21 +121,14 @@ function Dropdown({ items, selected, onSelect, triggerRef, onClose }) {
         onClose();
       }
     };
-    const timer = setTimeout(
-      () => document.addEventListener("click", handler),
-      0,
-    );
-    return () => {
-      clearTimeout(timer);
-      document.removeEventListener("click", handler);
-    };
-  }, [triggerRef, onClose]);
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [onClose, triggerRef]);
 
   return (
     <div
       ref={menuRef}
-      className="custom-dropdown fixed bg-[#1a1a1a] border border-white/10 rounded-xl py-1 shadow-2xl z-50 flex flex-col min-w-[100px] animate-fade-in"
-      style={{ bottom: position.bottom, left: position.left }}
+      className="custom-dropdown absolute bottom-[calc(100%+8px)] left-0 bg-[#1a1a1a] border border-white/10 rounded py-1 shadow-2xl z-50 flex flex-col min-w-[120px] animate-fade-in"
     >
       {items.map((item) => (
         <button
@@ -204,35 +189,24 @@ function ScrollColumn({ title, items, columnKey, value, onChange }) {
     children.forEach((child) => {
       const imgBox = child.querySelector("[data-imgbox]");
       const label = child.querySelector("[data-label]");
-      const focalSpan = imgBox?.querySelector("[data-focal-text]");
       const isClosest = child === closest;
 
       if (isClosest) {
-        child.classList.remove("opacity-30", "scale-75", "blur-[1px]");
-        child.classList.add("opacity-100", "scale-100", "blur-0", "z-30");
+        child.classList.remove("opacity-20", "scale-90");
+        child.classList.add("opacity-100", "scale-100", "z-30");
         if (imgBox) {
-          imgBox.classList.add(
-            "border-primary/50",
-            "shadow-glow-sm",
-            "scale-110",
-          );
-          imgBox.classList.remove("border-white/10", "bg-white/5");
+          imgBox.classList.add("border-primary/40", "bg-primary/5", "scale-110");
+          imgBox.classList.remove("border-transparent", "bg-transparent");
         }
-        if (focalSpan) focalSpan.classList.add("text-primary");
-        if (label) label.classList.add("text-primary", "text-shadow-sm");
+        if (label) label.classList.add("text-primary");
       } else {
-        child.classList.add("opacity-30", "scale-75", "blur-[1px]");
-        child.classList.remove("opacity-100", "scale-100", "blur-0", "z-30");
+        child.classList.add("opacity-20", "scale-90");
+        child.classList.remove("opacity-100", "scale-100", "z-30");
         if (imgBox) {
-          imgBox.classList.remove(
-            "border-primary/50",
-            "shadow-glow-sm",
-            "scale-110",
-          );
-          imgBox.classList.add("border-white/10", "bg-white/5");
+          imgBox.classList.remove("border-primary/40", "bg-primary/5", "scale-110");
+          imgBox.classList.add("border-transparent", "bg-transparent");
         }
-        if (focalSpan) focalSpan.classList.remove("text-primary");
-        if (label) label.classList.remove("text-primary", "text-shadow-sm");
+        if (label) label.classList.remove("text-primary");
       }
     });
 
@@ -299,18 +273,26 @@ function ScrollColumn({ title, items, columnKey, value, onChange }) {
     if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
   };
 
+  const getSelectedDescription = () => {
+    if (columnKey === 'camera') return CAMERA_MAP[value] || '';
+    if (columnKey === 'lens') return LENS_MAP[value] || '';
+    if (columnKey === 'focal') return FOCAL_PERSPECTIVE[value] || '';
+    if (columnKey === 'aperture') return APERTURE_EFFECT[value] || '';
+    return '';
+  };
+
   return (
-    <div className="flex flex-col items-center relative w-[140px] md:w-[160px] shrink-0 snap-center group">
-      <div className="mb-3 text-[9px] font-black text-white/40 uppercase tracking-[0.2em] text-center">
+    <div className="flex flex-col items-center relative w-[130px] md:w-[150px] shrink-0 snap-center">
+      <div className="mb-4 text-[10px] font-black text-white/20 uppercase tracking-[0.25em] text-center">
         {title}
       </div>
-      <div className="relative overflow-hidden w-full h-[40vh] md:h-[320px] bg-[#050505]/60 rounded-2xl border border-white/[0.05] shadow-2xl backdrop-blur-2xl transition-transform duration-500 hover:scale-[1.01] hover:border-white/[0.1]">
-        {/* Top mask */}
-        <div className="absolute top-0 left-0 right-0 h-32 bg-gradient-to-b from-[#0a0a0a] via-[#0a0a0a]/40 to-transparent z-20 pointer-events-none" />
-        {/* Bottom mask */}
-        <div className="absolute bottom-0 left-0 right-0 h-32 bg-gradient-to-t from-[#0a0a0a] via-[#0a0a0a]/40 to-transparent z-20 pointer-events-none" />
-        {/* Center selection indicator */}
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[85%] h-[80px] bg-primary/[0.03] border border-primary/[0.1] rounded-2xl pointer-events-none z-0" />
+      <div className="relative overflow-hidden w-full h-[280px] md:h-[300px] bg-gradient-to-b from-white/[0.02] to-transparent rounded-2xl border border-white/[0.03] shadow-2xl backdrop-blur-3xl group">
+        {/* Masks */}
+        <div className="absolute top-0 left-0 right-0 h-24 bg-gradient-to-b from-[#0a0a0a] to-transparent z-20 pointer-events-none" />
+        <div className="absolute bottom-0 left-0 right-0 h-24 bg-gradient-to-t from-[#0a0a0a] to-transparent z-20 pointer-events-none" />
+        
+        {/* Active Selection Ring */}
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[85%] h-[70px] bg-white/[0.02] border border-white/[0.05] rounded-xl pointer-events-none z-0" />
 
         <div
           ref={listRef}
@@ -320,8 +302,7 @@ function ScrollColumn({ title, items, columnKey, value, onChange }) {
           onMouseUp={onMouseUp}
           onMouseMove={onMouseMove}
         >
-          {/* Top spacer */}
-          <div style={{ height: "calc(50% - 50px)" }} />
+          <div style={{ height: "calc(50% - 35px)" }} />
 
           {items.map((item) => {
             const imageUrl = ASSET_URLS[item];
@@ -329,33 +310,28 @@ function ScrollColumn({ title, items, columnKey, value, onChange }) {
               <div
                 key={item}
                 data-value={item}
-                className="h-[100px] flex flex-col items-center justify-center gap-3 snap-center cursor-pointer transition-all duration-500 ease-out text-white p-2 select-none opacity-30 scale-75 blur-[1px]"
+                className="h-[70px] flex flex-col items-center justify-center gap-2 snap-center cursor-pointer transition-all duration-300 ease-out text-white p-2 select-none opacity-20 scale-90"
                 onClick={() => onItemClick(item)}
               >
                 <div
                   data-imgbox="true"
-                  className="w-14 h-14 rounded-xl border border-white/10 bg-white/5 flex items-center justify-center transition-all duration-500 shadow-inner overflow-hidden relative"
+                  className="w-10 h-10 rounded-lg border border-transparent flex items-center justify-center transition-all duration-300 overflow-hidden relative"
                 >
                   {imageUrl ? (
                     <img
                       src={imageUrl}
                       alt={String(item)}
-                      className="w-full h-full object-cover opacity-80"
+                      className="w-full h-full object-cover opacity-70"
                     />
-                  ) : columnKey === "focal" ? (
-                    <span
-                      data-focal-text="true"
-                      className="text-lg font-bold text-white/50"
-                    >
+                  ) : (
+                    <span className="text-sm font-bold text-white/40">
                       {item}
                     </span>
-                  ) : (
-                    <div className="w-3 h-3 bg-white/20 rounded-full" />
                   )}
                 </div>
                 <span
                   data-label="true"
-                  className="text-[9px] md:text-[10px] font-bold uppercase text-center leading-tight max-w-full truncate px-1 tracking-wider"
+                  className="text-[8px] md:text-[9px] font-black uppercase text-center leading-tight max-w-full truncate px-1 tracking-widest text-white/60"
                 >
                   {item}
                 </span>
@@ -363,9 +339,15 @@ function ScrollColumn({ title, items, columnKey, value, onChange }) {
             );
           })}
 
-          {/* Bottom spacer */}
-          <div style={{ height: "calc(50% - 50px)" }} />
+          <div style={{ height: "calc(50% - 35px)" }} />
         </div>
+      </div>
+      
+      {/* Selection Helper Text */}
+      <div className="mt-4 h-8 px-2 text-center">
+        <span className="text-[9px] font-medium text-primary/60 uppercase tracking-widest animate-fade-in inline-block leading-tight">
+          {getSelectedDescription()}
+        </span>
       </div>
     </div>
   );
@@ -394,21 +376,19 @@ function CameraControlsOverlay({
       onClick={handleBackdropClick}
     >
       <div
-        className={`w-full max-w-5xl bg-[#0a0a0a]/60 border border-white/10 rounded-2xl p-6 md:p-10 shadow-3xl transform transition-all duration-500 flex flex-col max-h-[90vh] ${isOpen ? "scale-100 translate-y-0" : "scale-95 translate-y-10"}`}
+        className={`w-full max-w-5xl bg-[#0a0a0a] border border-white/5 rounded-3xl p-6 md:p-10 shadow-[0_0_100px_rgba(0,0,0,0.8)] transform transition-all duration-500 flex flex-col max-h-[90vh] ${isOpen ? "scale-100 translate-y-0" : "scale-95 translate-y-10"}`}
       >
         {/* Header */}
-        <div className="flex items-center justify-between mb-10">
+        <div className="flex items-center justify-between mb-8">
           <div className="flex flex-col gap-1">
-            <h2 className="text-xl font-bold text-white tracking-tight">
-              Camera Configuration
+            <h2 className="text-2xl font-black text-white tracking-tighter uppercase italic">
+              Camera Config
             </h2>
-            <p className="text-[11px] font-medium text-white/20 uppercase tracking-[0.2em]">
-              Select hardware & optics
-            </p>
+            <div className="h-[1px] w-12 bg-primary/40" />
           </div>
           <button
             onClick={onClose}
-            className="w-10 h-10 rounded-full bg-white/[0.03] border border-white/[0.05] flex items-center justify-center text-white/40 hover:text-white hover:bg-white/[0.06] transition-all"
+            className="w-10 h-10 rounded-full hover:bg-white/5 flex items-center justify-center text-white/20 hover:text-white transition-all"
           >
             <svg
               width="20"
@@ -416,7 +396,7 @@ function CameraControlsOverlay({
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
-              strokeWidth="2.5"
+              strokeWidth="2"
             >
               <path d="M18 6L6 18M6 6l12 12" />
             </svg>
@@ -484,6 +464,10 @@ export default function CinemaStudio({
   const [isGenerating, setIsGenerating] = useState(false);
   const [canvasUrl, setCanvasUrl] = useState(null); // null = prompt view
   const [fullscreenUrl, setFullscreenUrl] = useState(null);
+  const [uploadedImage, setUploadedImage] = useState(null);
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
+  const [imageUploadProgress, setImageUploadProgress] = useState(0);
+  const imageInputRef = useRef(null);
   const [activeHistoryIndex, setactiveHistoryIndex] = useState(null);
 
   // ── Internal history state (used when historyItems prop is not provided) ──
@@ -498,6 +482,31 @@ export default function CinemaStudio({
   const textareaRef = useRef(null);
   const resultImgRef = useRef(null);
 
+  const handleImageUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploadingImage(true);
+    setImageUploadProgress(0);
+
+    try {
+      const url = await uploadFile(apiKey, file, (progress) => {
+        setImageUploadProgress(progress);
+      });
+      if (url) setUploadedImage(url);
+    } catch (err) {
+      console.error("Image upload failed:", err);
+    } finally {
+      setIsUploadingImage(false);
+      setImageUploadProgress(0);
+      if (imageInputRef.current) imageInputRef.current.value = "";
+    }
+  };
+
+  const removeImage = () => {
+    setUploadedImage(null);
+  };
+
   // ── Persistence: Load ────────────────────────────────────────────────────
   useEffect(() => {
     try {
@@ -507,10 +516,23 @@ export default function CinemaStudio({
         if (data.settings) setSettings(data.settings);
         if (data.resolution) setResolution(data.resolution);
         if (data.internalHistory) setInternalHistory(data.internalHistory);
+        if (data.uploadedImage) setUploadedImage(data.uploadedImage);
       }
     } catch (err) {
       console.warn("Failed to load CinemaStudio persistence:", err);
     }
+  }, []);
+
+  // ── Adjust height on load ────────────────────────────────────────────────
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (textareaRef.current) {
+        const el = textareaRef.current;
+        el.style.height = "auto";
+        el.style.height = el.scrollHeight + "px";
+      }
+    }, 150);
+    return () => clearTimeout(timer);
   }, []);
 
   // ── Persistence: Save ────────────────────────────────────────────────────
@@ -521,6 +543,7 @@ export default function CinemaStudio({
           settings,
           resolution,
           internalHistory,
+          uploadedImage,
         };
         localStorage.setItem(PERSIST_KEY, JSON.stringify(state));
       } catch (err) {
@@ -528,7 +551,7 @@ export default function CinemaStudio({
       }
     }, 500); // 500ms debounce
     return () => clearTimeout(timer);
-  }, [settings, resolution, internalHistory]);
+  }, [settings, resolution, internalHistory, uploadedImage]);
 
   // Derive effective history (prop wins over internal)
   const history = historyItems != null ? historyItems : internalHistory;
@@ -566,11 +589,12 @@ export default function CinemaStudio({
 
     try {
       const res = await generateImage(apiKey, {
-        model: "nano-banana-pro",
+        model: uploadedImage ? "nano-banana-pro-edit" : "nano-banana-pro",
         prompt: finalPrompt,
         aspect_ratio: settings.aspect_ratio,
         resolution: resolution.toLowerCase(),
         negative_prompt: "blurry, low quality, distortion, bad composition",
+        images_list: uploadedImage ? [uploadedImage] : [],
       });
 
       if (res && res.url) {
@@ -693,7 +717,7 @@ export default function CinemaStudio({
             {history.map((entry, idx) => (
               <div
                 key={entry.timestamp ?? idx}
-                className="relative group rounded-2xl overflow-hidden border border-white/10 bg-[#0a0a0a] shadow-xl hover:border-[#d9ff00]/50 transition-all duration-300 flex flex-col cursor-pointer"
+                className="relative group rounded-lg overflow-hidden border border-white/10 bg-[#0a0a0a] shadow-xl hover:border-[#22d3ee]/50 transition-all duration-300 flex flex-col cursor-pointer"
                 onClick={() => loadHistoryItem(entry, idx)}
               >
                 <img
@@ -711,7 +735,7 @@ export default function CinemaStudio({
                       e.stopPropagation();
                       setFullscreenUrl(entry.url);
                     }}
-                    className="p-2 bg-black/60 backdrop-blur-md rounded-full text-white hover:bg-[#d9ff00] hover:text-black transition-all border border-white/10"
+                    className="p-2 bg-black/60 backdrop-blur-md rounded-full text-white hover:bg-[#22d3ee] hover:text-black transition-all border border-white/10"
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                       <polyline points="15 3 21 3 21 9" />
@@ -740,7 +764,7 @@ export default function CinemaStudio({
                         window.open(entry.url, "_blank");
                       }
                     }}
-                    className="p-2 bg-black/60 backdrop-blur-md rounded-full text-white hover:bg-[#d9ff00] hover:text-black transition-all border border-white/10"
+                    className="p-2 bg-black/60 backdrop-blur-md rounded-full text-white hover:bg-[#22d3ee] hover:text-black transition-all border border-white/10"
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                       <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" />
@@ -754,7 +778,7 @@ export default function CinemaStudio({
                     {entry.settings?.prompt || "No prompt"}
                   </p>
                   <div className="flex items-center justify-between mt-1 flex-wrap gap-1">
-                    <span className="text-[10px] font-bold text-[#d9ff00] px-2 py-0.5 bg-[#d9ff00]/10 rounded border border-[#d9ff00]/20">
+                    <span className="text-[10px] font-bold text-[#22d3ee] px-2 py-0.5 bg-[#22d3ee]/10 rounded border border-[#22d3ee]/20">
                       {entry.settings?.camera || "Standard"}
                     </span>
                     <div className="flex gap-2">
@@ -799,7 +823,77 @@ export default function CinemaStudio({
           {/* Left Column */}
           <div className="flex-1 flex flex-col gap-3 min-h-[80px] justify-between py-1">
             {/* Input Row */}
-            <div className="flex items-start gap-4 w-full">
+            <div className="flex items-start gap-4 w-full px-1">
+              {/* Image Upload Button */}
+              <div className="relative pt-0.5">
+                <input
+                  type="file"
+                  ref={imageInputRef}
+                  className="hidden"
+                  accept="image/*"
+                  onChange={handleImageUpload}
+                />
+                
+                <button
+                  onClick={() =>
+                    uploadedImage
+                      ? removeImage()
+                      : imageInputRef.current?.click()
+                  }
+                  disabled={isUploadingImage}
+                  className={`w-10 h-10 shrink-0 rounded-full border transition-all flex items-center justify-center relative overflow-hidden ${uploadedImage ? "border-primary/60 bg-white/5" : "bg-white/[0.03] border-white/[0.03] hover:bg-white/10 hover:border-primary/40"} group`}
+                >
+                  {isUploadingImage ? (
+                    <div className="flex flex-col items-center justify-center w-full h-full absolute inset-0 bg-black/80 z-20 backdrop-blur-[2px]">
+                      <svg className="w-8 h-8 -rotate-90">
+                        <circle
+                          cx="16"
+                          cy="16"
+                          r="14"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          fill="transparent"
+                          className="text-white/10"
+                        />
+                        <circle
+                          cx="16"
+                          cy="16"
+                          r="14"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          fill="transparent"
+                          strokeDasharray={88}
+                          strokeDashoffset={88 - (88 * imageUploadProgress) / 100}
+                          className="text-primary transition-all duration-300"
+                        />
+                      </svg>
+                      <span className="absolute text-[8px] font-bold text-white">
+                        {imageUploadProgress}%
+                      </span>
+                    </div>
+                  ) : uploadedImage ? (
+                    <div className="relative w-full h-full group">
+                      <img
+                        src={uploadedImage}
+                        alt="Reference"
+                        className="w-full h-full object-cover opacity-80 group-hover:opacity-40 transition-opacity"
+                      />
+                      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="text-white">
+                          <path d="M18 6L6 18M6 6l12 12" />
+                        </svg>
+                      </div>
+                    </div>
+                  ) : (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-white/40 group-hover:text-white transition-colors">
+                      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                      <circle cx="8.5" cy="8.5" r="1.5" />
+                      <polyline points="21 15 16 10 5 21" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+
               <textarea
                 ref={textareaRef}
                 placeholder="Describe your cinema scene..."
@@ -868,18 +962,18 @@ export default function CinemaStudio({
                   className="flex flex-col items-start justify-center px-4 py-1.5 bg-white/[0.03] rounded-md border border-white/[0.03] hover:border-white/20 transition-all text-left flex-1 min-w-[100px] md:min-w-[160px] max-w-[240px] h-[50px] relative group overflow-hidden"
                   onClick={() => setIsOverlayOpen(true)}
                 >
-                  <div className="absolute top-3 right-3 w-1.5 h-1.5 bg-[#d9ff00] rounded-full shadow-lg shadow-[#d9ff00]/20" />
+                  <div className="absolute top-3 right-3 w-1.5 h-1.5 bg-[#22d3ee] rounded-full shadow-lg shadow-[#22d3ee]/20" />
                   <span className="text-[9px] font-bold text-white/30 uppercase truncate w-full tracking-wider group-hover:text-white transition-colors">
                     {settings.camera}
                   </span>
-                  <span className="text-xs font-semibold text-white/70 truncate w-full group-hover:text-[#d9ff00] transition-colors">
+                  <span className="text-xs font-semibold text-white/70 truncate w-full group-hover:text-[#22d3ee] transition-colors">
                     {formatSummaryValue()}
                   </span>
                 </button>
 
                 {/* Generate Button */}
                 <button
-                  className="h-[50px] px-8 bg-[#d9ff00] text-black rounded-md font-medium text-sm hover:bg-[#e5ff33] hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-2 shadow-lg shadow-[#d9ff00]/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="h-[50px] px-8 bg-[#22d3ee] text-black rounded-md font-medium text-sm hover:bg-[#e5ff33] hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-2 shadow-lg shadow-[#22d3ee]/10 disabled:opacity-50 disabled:cursor-not-allowed"
                   disabled={isGenerating || !settings.prompt.trim()}
                   onClick={handleGenerate}
                 >
@@ -898,7 +992,32 @@ export default function CinemaStudio({
           </div>  
         </div>
       </div>
-
+      {fullscreenUrl && (
+        <div 
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 backdrop-blur-sm animate-fade-in"
+          onClick={() => setFullscreenUrl(null)}
+        >
+          <button
+            type="button"
+            className="absolute top-6 right-6 p-3 bg-white/10 hover:bg-white/20 rounded-full text-white transition-colors border border-white/10"
+            onClick={(e) => {
+              e.stopPropagation();
+              setFullscreenUrl(null);
+            }}
+          >
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+          <img 
+            src={fullscreenUrl} 
+            alt="Fullscreen Preview" 
+            className="max-w-[95vw] max-h-[95vh] rounded-2xl shadow-2xl object-contain animate-scale-up" 
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}  
       {/* ── Camera Controls Overlay ── */}
       <CameraControlsOverlay
         isOpen={isOverlayOpen}

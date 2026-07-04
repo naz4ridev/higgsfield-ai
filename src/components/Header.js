@@ -1,4 +1,5 @@
 import { SettingsModal } from './SettingsModal.js';
+import { t, getLang, setLang } from '../lib/i18n.js';
 
 export function Header(navigate) {
     const header = document.createElement('header');
@@ -27,30 +28,31 @@ export function Header(navigate) {
 
     const menu = document.createElement('nav');
     menu.className = 'hidden lg:flex items-center gap-6 text-[13px] font-bold text-secondary';
-    const items = ['Image', 'Video', 'Lip Sync', 'Cinema Studio'];
+    const items = [
+        { label: t('nav.image'),   page: 'image' },
+        { label: t('nav.video'),   page: 'video' },
+        { label: t('nav.lipsync'), page: 'lipsync' },
+        { label: t('nav.cinema'),  page: 'cinema' },
+        { label: t('nav.workflows'), page: 'workflows' },
+        { label: t('nav.agents'),  page: 'agents' },
+        { label: t('nav.mcpcli'),  page: 'mcp-cli' },
+    ];
 
-    items.forEach(item => {
+    items.forEach(({ label, page }, idx) => {
         const link = document.createElement('a');
-        link.textContent = item;
-        link.className = `hover:text-white transition-all cursor-pointer relative group ${item === 'Image' ? 'text-white' : ''}`;
+        link.textContent = label;
+        link.className = `hover:text-white transition-all cursor-pointer relative group ${idx === 0 ? 'text-white' : ''}`;
 
-        // Active Indicator or Dot
-        if (item === 'Image') {
+        if (idx === 0) {
             const dot = document.createElement('div');
             dot.className = 'absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-primary rounded-full';
             link.appendChild(dot);
         }
 
         link.onclick = () => {
-            // Remove active state from all
             Array.from(menu.children).forEach(child => child.classList.remove('text-white'));
-            // Add to current
             link.classList.add('text-white');
-
-            if (item === 'Image') navigate('image');
-            else if (item === 'Video') navigate('video');
-            else if (item === 'Lip Sync') navigate('lipsync');
-            else if (item === 'Cinema Studio') navigate('cinema');
+            navigate(page);
         };
 
         menu.appendChild(link);
@@ -62,19 +64,30 @@ export function Header(navigate) {
     const rightPart = document.createElement('div');
     rightPart.className = 'flex items-center gap-4';
 
-    const keyBtn = document.createElement('button');
-    keyBtn.className = 'p-2 text-secondary hover:text-white transition-colors';
-    keyBtn.title = 'Update API Key';
-    keyBtn.innerHTML = `
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3m-3-3l-2.25-2.25"/>
+    const settingsBtn = document.createElement('button');
+    settingsBtn.className = 'flex items-center gap-2 px-3 py-1.5 rounded-md border border-white/10 bg-white/5 text-[13px] font-bold text-white/80 hover:text-white hover:bg-white/10 hover:border-white/20 transition-colors';
+    settingsBtn.title = t('web.settingsTitle');
+    settingsBtn.innerHTML = `
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
         </svg>
+        <span>${t('nav.settings')}</span>
     `;
-    keyBtn.onclick = () => {
+    settingsBtn.onclick = () => {
         document.body.appendChild(SettingsModal());
     };
 
-    rightPart.appendChild(keyBtn);
+    // Language toggle button
+    const langBtn = document.createElement('button');
+    const currentLang = getLang();
+    langBtn.className = 'flex items-center px-3 py-1.5 rounded-md border border-white/10 bg-white/5 text-[13px] font-bold text-white/80 hover:text-white hover:bg-white/10 hover:border-white/20 transition-colors';
+    langBtn.title = currentLang === 'zh-CN' ? t('web.switchToEn') : t('web.switchToZh');
+    langBtn.textContent = currentLang === 'zh-CN' ? 'EN' : '中文';
+    langBtn.onclick = () => setLang(currentLang === 'zh-CN' ? 'en' : 'zh-CN');
+
+    rightPart.appendChild(langBtn);
+    rightPart.appendChild(settingsBtn);
 
     navBar.appendChild(leftPart);
     navBar.appendChild(rightPart);
