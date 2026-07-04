@@ -8,6 +8,17 @@ services:
       - '${HOST_BIND_IP:-127.0.0.1}:${HOST_PORT:-18214}:3000'
     extra_hosts:
       - 'host.docker.internal:host-gateway'
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.higgsfield-https.rule=Host(\`higgsfield.naz4ri.dev\`)"
+      - "traefik.http.routers.higgsfield-https.entryPoints=https"
+      - "traefik.http.routers.higgsfield-https.tls=true"
+      - "traefik.http.services.higgsfield-svc.loadbalancer.server.port=3000"
+      - "traefik.http.routers.higgsfield-https.service=higgsfield-svc"
+      - "traefik.http.routers.higgsfield-http.rule=Host(\`higgsfield.naz4ri.dev\`)"
+      - "traefik.http.routers.higgsfield-http.entryPoints=http"
+      - "traefik.http.routers.higgsfield-http.middlewares=higgsfield-redirect"
+      - "traefik.http.middlewares.higgsfield-redirect.redirectscheme.scheme=https"
     environment:
       PORT: '3000'
       HOST: 0.0.0.0
