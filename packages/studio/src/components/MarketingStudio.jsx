@@ -2,6 +2,28 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { uploadFile, generateMarketingStudioAd } from "../muapi.js";
+import { scopedPersistKey, migrateLegacyPersistKey } from "../persistKey.js";
+import MobileGenerationActions, {
+  GenerationCopyButtons,
+} from "./MobileGenerationActions.jsx";
+import {
+  PROMPT_CONTROL_LABEL_CLASS,
+  PromptAspectRatioIcon,
+  PromptAction,
+  PromptChevronIcon,
+  PromptComposer,
+  PromptControls,
+  PromptFooter,
+  PromptMenuItem,
+  PromptMenuList,
+  PromptPopover,
+  PromptPopoverHeader,
+  PromptDurationIcon,
+  PromptQualityIcon,
+  PromptTextarea,
+  promptControlClassName,
+  promptMediaButtonClassName,
+} from "./prompt/PromptComposer.jsx";
 
 const SCROLLBAR_STYLE = `
   .custom-scrollbar-thin::-webkit-scrollbar {
@@ -103,9 +125,10 @@ function UploadSlot({ icon, url, progress, label, onUpload, onClear, multiple = 
       <div 
         onClick={() => inputRef.current?.click()}
         title={`Upload ${label}`}
-        className={`relative w-10 h-10 rounded-full border transition-all flex items-center justify-center cursor-pointer ${
-          url ? 'border-primary/40 bg-primary/5' : 'border-white/5 bg-white/5 hover:bg-white/10 hover:border-white/20'
-        }`}
+        className={promptMediaButtonClassName({
+          active: Boolean(url),
+          className: "cursor-pointer",
+        })}
       >
         <input 
           ref={inputRef} 
@@ -144,7 +167,7 @@ function UploadSlot({ icon, url, progress, label, onUpload, onClear, multiple = 
   );
 }
 
-function Dropdown({ isOpen, title, items, selectedId, onSelect, onClose, isVideo = false }) {
+function Dropdown({ isOpen, title, items, selectedId, onSelect, onClose, isVideo = false, onPreview = null }) {
   const ref = useRef(null);
   
   useEffect(() => {
@@ -159,11 +182,11 @@ function Dropdown({ isOpen, title, items, selectedId, onSelect, onClose, isVideo
   if (!isOpen) return null;
 
   return (
-    <div 
+    <PromptPopover
       ref={ref}
-      className="absolute bottom-[calc(100%+12px)] left-0 z-50 bg-[#0a0a0a] rounded p-4 shadow-4xl border border-white/10 w-[420px] animate-fade-in-up"
+      className="w-[420px] max-w-[calc(100vw-2rem)]"
     >
-      <div className="text-[10px] font-black text-white/40 uppercase tracking-widest mb-4 px-1">{title}</div>
+      <PromptPopoverHeader className="mb-3">{title}</PromptPopoverHeader>
       <div className="grid grid-cols-3 gap-3 max-h-[300px] overflow-y-auto custom-scrollbar pr-1">
         {items.map(item => (
           <div 
@@ -173,6 +196,25 @@ function Dropdown({ isOpen, title, items, selectedId, onSelect, onClose, isVideo
               selectedId === item.id || selectedId === item.url ? 'border-primary shadow-glow' : 'border-white/5 hover:border-white/20'
             }`}
           >
+            {onPreview && !isVideo && (
+              <button
+                type="button"
+                title="Enlarge preview"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onPreview(item);
+                }}
+                className="absolute top-1.5 left-1.5 w-6 h-6 bg-black/60 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-[#22d3ee] hover:text-black transition-all border border-white/10 z-20 text-white"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <circle cx="11" cy="11" r="8" />
+                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                  <line x1="11" y1="8" x2="11" y2="14" />
+                  <line x1="8" y1="11" x2="14" y2="11" />
+                </svg>
+              </button>
+            )}
+
             {isVideo ? (
               <video src={item.url} autoPlay loop muted className="w-full aspect-[3/4] object-cover group-hover:scale-105 transition-all duration-500" />
             ) : (
@@ -189,7 +231,7 @@ function Dropdown({ isOpen, title, items, selectedId, onSelect, onClose, isVideo
           </div>
         ))}
       </div>
-    </div>
+    </PromptPopover>
   );
 }
 
@@ -208,31 +250,42 @@ function SimpleDropdown({ isOpen, title, options, selected, onSelect, onClose })
   if (!isOpen) return null;
 
   return (
-    <div 
+    <PromptPopover
       ref={ref}
-      className="absolute bottom-[calc(100%+12px)] left-0 z-50 bg-[#0a0a0a] rounded p-1 max-h-[200px] overflow-y-auto custom-scrollbar shadow-3xl border border-white/10 min-w-[140px] animate-fade-in-up"
     >
-      <div className="text-[10px] font-black text-white/40 uppercase tracking-widest mb-2 px-3 pt-2">{title}</div>
+      <PromptPopoverHeader>{title}</PromptPopoverHeader>
+      <PromptMenuList>
       {options.map(opt => (
-        <button
+        <PromptMenuItem
           key={opt}
+          selected={selected === opt}
           onClick={() => { onSelect(opt); onClose(); }}
-          className={`w-full text-left px-4 py-2 rounded text-xs font-bold transition-all flex items-center justify-between ${
-            selected === opt ? 'bg-primary text-black' : 'text-white/60 hover:bg-white/5 hover:text-white'
-          }`}
         >
-          <span>{opt}</span>
-          {selected === opt && <CheckSvg />}
-        </button>
+          {opt}
+        </PromptMenuItem>
       ))}
-    </div>
+      </PromptMenuList>
+    </PromptPopover>
   );
 }
 
 // ── Main Component ───────────────────────────────────────────────────────────
 
-export default function MarketingStudio({ apiKey, droppedFiles, onFilesHandled }) {
-  const PERSIST_KEY = "hg_marketing_studio_persistent";
+export default function MarketingStudio({
+  apiKey,
+  droppedFiles,
+  onFilesHandled,
+  onGenerationStart,
+  onGenerationEnd,
+  onGenerationComplete,
+  onGenerationError,
+  historyItems,
+}) {
+  const LEGACY_PERSIST_KEY = "hg_marketing_studio_persistent";
+  const PERSIST_KEY = scopedPersistKey(LEGACY_PERSIST_KEY, apiKey);
+  useEffect(() => {
+    migrateLegacyPersistKey(LEGACY_PERSIST_KEY, PERSIST_KEY);
+  }, [PERSIST_KEY]);
   
   const [prompt, setPrompt] = useState("");
   const [productImage, setProductImage] = useState(null);
@@ -247,11 +300,14 @@ export default function MarketingStudio({ apiKey, droppedFiles, onFilesHandled }
     duration: 5
   });
 
-  const [history, setHistory] = useState([]);
+  const [localHistory, setLocalHistory] = useState([]);
+  const history = historyItems ?? localHistory;
   const [isGenerating, setIsGenerating] = useState(false);
   const [dropdown, setDropdown] = useState(null); // 'format' | 'avatar' | 'ratio' | 'res' | 'duration'
   const [uploadProgress, setUploadProgress] = useState({ product: 0, avatar: 0, additional: 0 });
   const [fullscreenUrl, setFullscreenUrl] = useState(null);
+  const [previewAvatar, setPreviewAvatar] = useState(null);
+  const [slideDirection, setSlideDirection] = useState("next"); // 'next' | 'prev'
 
   const textareaRef = useRef(null);
 
@@ -267,18 +323,19 @@ export default function MarketingStudio({ apiKey, droppedFiles, onFilesHandled }
         if (data.productImage) setProductImage(data.productImage);
         if (data.avatarImage) setAvatarImage(data.avatarImage);
         if (data.additionalImages) setAdditionalImages(data.additionalImages);
-        if (data.history) setHistory(data.history);
+        if (data.localHistory) setLocalHistory(data.localHistory);
+        else if (data.history) setLocalHistory(data.history);
       }
     } catch (err) { console.warn("Load failed", err); }
   }, []);
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      const state = { prompt, params, productImage, avatarImage, additionalImages, history };
+      const state = { prompt, params, productImage, avatarImage, additionalImages, localHistory };
       localStorage.setItem(PERSIST_KEY, JSON.stringify(state));
     }, 500);
     return () => clearTimeout(timer);
-  }, [prompt, params, productImage, avatarImage, additionalImages, history]);
+  }, [prompt, params, productImage, avatarImage, additionalImages, localHistory]);
 
   // ── Handlers ───────────────────────────────────────────────────────────────
 
@@ -327,6 +384,7 @@ export default function MarketingStudio({ apiKey, droppedFiles, onFilesHandled }
     if (!prompt.trim()) return alert("Please enter an ad script.");
     if (!productImage) return alert("Please upload a product image.");
 
+    onGenerationStart?.();
     setIsGenerating(true);
     try {
       const result = await generateMarketingStudioAd(apiKey, {
@@ -346,43 +404,48 @@ export default function MarketingStudio({ apiKey, droppedFiles, onFilesHandled }
           format: params.format,
           timestamp: new Date().toISOString()
         };
-        setHistory(prev => [entry, ...prev]);
+        if (!historyItems) {
+          setLocalHistory(prev => [entry, ...prev]);
+        }
         setFullscreenUrl(result.url);
+        onGenerationComplete?.({ url: result.url, type: "video" });
       }
     } catch (err) {
-      alert("Generation failed: " + err.message);
+      onGenerationError?.(err.message?.slice(0, 120) || "Marketing generation failed");
     } finally {
       setIsGenerating(false);
+      onGenerationEnd?.();
     }
-  };
-
-  const handleTextareaInput = (e) => {
-    const el = e.target;
-    el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 250) + "px";
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="w-full h-full flex flex-col items-center justify-center bg-app-bg relative p-4 md:p-6 overflow-hidden">
+    <div className="w-full h-full flex flex-col items-center justify-center bg-app-bg relative overflow-hidden">
       <style>{SCROLLBAR_STYLE}</style>
       
       {/* ── MAIN CONTENT AREA ── */}
-      <div className="flex-1 overflow-y-auto custom-scrollbar p-6 pb-40">
+      <div className="flex-1 w-full max-w-7xl mx-auto overflow-y-auto custom-scrollbar pb-40 lg:pb-32 px-2">
         {history.length > 0 ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-fade-in-up">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full pt-4 animate-fade-in-up">
             {history.map(entry => (
-              <div key={entry.id} className="relative group rounded-lg overflow-hidden border border-white/10 bg-[#0a0a0a] shadow-xl hover:border-primary/50 transition-all duration-300 flex flex-col">
+              <div
+                key={entry.id}
+                onClick={() => setFullscreenUrl(entry.url)}
+                className="relative group rounded-lg overflow-hidden border border-white/10 bg-[#0a0a0a] shadow-xl hover:border-primary/50 transition-all duration-300 flex flex-col cursor-pointer"
+              >
                 <video 
                   src={entry.url} 
-                  className="w-full aspect-video object-cover cursor-pointer hover:opacity-80 transition-opacity" 
-                  onClick={() => setFullscreenUrl(entry.url)}
+                  className="w-full aspect-video object-cover hover:opacity-80 transition-opacity" 
                   muted loop onMouseOver={e => e.target.play()} onMouseOut={e => { e.target.pause(); e.target.currentTime = 0; }}
                 />
                 
                 {/* Actions Overlay */}
-                <div className="absolute top-2 right-2 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="absolute top-2 right-2 hidden md:flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <GenerationCopyButtons
+                    prompt={entry.prompt}
+                    onCopyError={onGenerationError}
+                  />
                    <button
                     onClick={(e) => { e.stopPropagation(); downloadFile(entry.url, `marketing-ad-${entry.id}.mp4`); }}
                     className="p-2 bg-black/60 backdrop-blur-md rounded-full text-white hover:bg-primary hover:text-black transition-all border border-white/10"
@@ -392,49 +455,116 @@ export default function MarketingStudio({ apiKey, droppedFiles, onFilesHandled }
                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" />
                      </svg>
                    </button>
+                   <button
+                    type="button"
+                    title="Delete"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (confirm("Are you sure you want to delete this generated item?")) {
+                        if (!historyItems) {
+                          setLocalHistory(prev => prev.filter(h => h.id !== entry.id));
+                        }
+                      }
+                    }}
+                    className="p-2 bg-black/60 backdrop-blur-md rounded-full text-red-400 hover:bg-red-500 hover:text-white transition-all border border-white/10"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+                      <line x1="10" y1="11" x2="10" y2="17" />
+                      <line x1="14" y1="11" x2="14" y2="17" />
+                    </svg>
+                   </button>
                 </div>
+                <MobileGenerationActions
+                  prompt={entry.prompt}
+                  onCopyError={onGenerationError}
+                  actions={[
+                    {
+                      kind: "download",
+                      label: "Download",
+                      onSelect: () =>
+                        downloadFile(entry.url, `marketing-ad-${entry.id}.mp4`),
+                    },
+                    {
+                      kind: "delete",
+                      label: "Delete",
+                      danger: true,
+                      onSelect: () => {
+                        if (confirm("Are you sure you want to delete this generated item?")) {
+                          if (!historyItems) {
+                            setLocalHistory((prev) =>
+                              prev.filter((item) => item.id !== entry.id),
+                            );
+                          }
+                        }
+                      },
+                    },
+                  ]}
+                />
 
-                <div className="p-3 bg-black/80 backdrop-blur-sm border-t border-white/5 flex flex-col gap-1.5 flex-1">
-                  <p className="text-white/60 text-[10px] line-clamp-2 leading-relaxed font-medium">{entry.prompt}</p>
-                  <div className="flex items-center justify-between mt-auto">
+                <div className="p-3 bg-black/80 backdrop-blur-sm border-t border-white/5 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
                     <span className="text-[9px] font-black text-primary px-2 py-0.5 bg-primary/10 rounded border border-primary/20 uppercase tracking-tighter">
-                      {entry.format}
+                      Marketing Studio
                     </span>
-                    <span className="text-[9px] text-white/30 font-bold">{new Date(entry.timestamp).toLocaleDateString()}</span>
+                    {entry.format && (
+                      <span className="text-[9px] text-white/40 font-bold">{entry.format}</span>
+                    )}
                   </div>
                 </div>
               </div>
             ))}
           </div>
         ) : (
-          <div className="h-full flex flex-col items-center justify-center animate-fade-in-up transition-all duration-700">
-             <div className="mb-12 relative group">
-                <div className="absolute inset-0 bg-primary/10 blur-[120px] rounded-full opacity-30 group-hover:opacity-60 transition-opacity duration-1000" />
-                <div className="relative w-24 h-24 md:w-32 md:h-32 bg-white/[0.02] rounded-[2rem] flex items-center justify-center border border-white/[0.05] overflow-hidden backdrop-blur-sm">
-                  <div className="w-16 h-16 bg-primary/5 rounded-2xl flex items-center justify-center border border-primary/10 relative z-10 transition-transform duration-500 group-hover:scale-110 shadow-inner">
-                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" strokeWidth="1.5">
-                      <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
-                      <line x1="8" y1="21" x2="16" y2="21" />
-                      <line x1="12" y1="17" x2="12" y2="21" />
-                    </svg>
-                  </div>
-                </div>
+          <div className="flex flex-col items-center justify-center h-full animate-fade-in-up transition-all duration-700 min-h-[50vh]">
+            {/* Overlapping floating cards */}
+            <div className="flex items-center justify-center gap-1.5 md:gap-3 mb-10 select-none scale-90 sm:scale-100">
+              <div className="w-18 h-22 sm:w-24 sm:h-28 rounded-2xl border border-white/10 shadow-2xl -rotate-[12deg] transform hover:rotate-0 hover:scale-110 hover:z-20 transition-all duration-300 overflow-hidden bg-white/[0.01] flex-shrink-0">
+                <img
+                  src="https://d3adwkbyhxyrtq.cloudfront.net/webassets/videomodels/sdxl-image.avif"
+                  alt="Creative asset 1"
+                  className="w-full h-full object-cover"
+                />
               </div>
-              <h1 className="text-3xl sm:text-5xl md:text-6xl font-extrabold text-white tracking-tight mb-4 text-center px-4">
-                <span className="text-white/40 font-medium uppercase tracking-widest">START CREATING WITH</span>
-                <br />
-                <span className="text-white uppercase tracking-tight">MARKETING STUDIO</span>
-              </h1>
-              <p className="text-white/40 text-sm md:text-base font-medium tracking-wide text-center max-w-lg leading-relaxed px-6">
-                Describe your scene, upload your product, and watch high-converting AI video ads come to life.
-              </p>
+              <div className="w-18 h-22 sm:w-24 sm:h-28 rounded-2xl border border-white/10 shadow-2xl -rotate-[4deg] transform hover:rotate-0 hover:scale-110 hover:z-20 transition-all duration-300 overflow-hidden bg-white/[0.01] -ml-3 sm:-ml-4 flex-shrink-0">
+                <img
+                  src="https://d3adwkbyhxyrtq.cloudfront.net/webassets/videomodels/chroma-image.avif"
+                  alt="Creative asset 2"
+                  className="w-full h-full object-cover"
+                />
+              </div>
+              <div className="w-18 h-18 sm:w-24 sm:h-24 rounded-full border border-white/10 shadow-2xl rotate-[6deg] transform hover:rotate-0 hover:scale-110 hover:z-20 transition-all duration-300 overflow-hidden bg-white/[0.01] -ml-3 sm:-ml-4 flex-shrink-0">
+                <img
+                  src="https://d3adwkbyhxyrtq.cloudfront.net/webassets/videomodels/neta-lumina.avif"
+                  alt="Creative asset 3"
+                  className="w-full h-full object-cover"
+                />
+              </div>
+              <div className="w-18 h-22 sm:w-24 sm:h-28 rounded-2xl border border-white/10 shadow-2xl rotate-[12deg] transform hover:rotate-0 hover:scale-110 hover:z-20 transition-all duration-300 overflow-hidden bg-white/[0.01] -ml-3 sm:-ml-4 flex-shrink-0">
+                <img
+                  src="https://d3adwkbyhxyrtq.cloudfront.net/webassets/videomodels/perfect-pony-xl.avif"
+                  alt="Creative asset 4"
+                  className="w-full h-full object-cover"
+                />
+              </div>
+            </div>
+
+            <h1 className="text-2xl sm:text-4xl md:text-5xl font-extrabold tracking-tight mb-4 text-center px-4 flex flex-col items-center">
+              <span className="text-white font-black uppercase text-xl sm:text-3xl tracking-wide mb-1 opacity-90">START CREATING WITH</span>
+              <span className="text-[#22d3ee] font-black uppercase text-2xl sm:text-4xl sm:mt-1 tracking-tight">
+                MARKETING STUDIO
+              </span>
+            </h1>
+            <p className="text-white/40 text-xs sm:text-sm font-medium tracking-wide text-center max-w-lg leading-relaxed px-4">
+              Describe your scene, upload your product, and watch high-converting AI video ads come to life.
+            </p>
           </div>
         )}
       </div>
 
       {/* ── BOTTOM PROMPT BAR ── */}
-      <div style={{ animationDelay: "0.2s" }} className="absolute bottom-4 w-full max-w-[95%] lg:max-w-4xl z-40 animate-fade-in-up">
-        <div className="bg-[#0a0a0a]/80 backdrop-blur-3xl rounded-lg border border-white/10 p-4 flex flex-col gap-2 shadow-4xl">
+      <PromptComposer>
           {additionalImages.length > 0 && (
             <div className="flex items-center gap-1.5">
               {additionalImages.map((img, idx) => (
@@ -452,20 +582,17 @@ export default function MarketingStudio({ apiKey, droppedFiles, onFilesHandled }
           )}
           {/* Top Row: Full-width Textarea */}
           <div className="w-full relative">
-            <textarea
+            <PromptTextarea
               ref={textareaRef}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              onInput={handleTextareaInput}
               placeholder="Describe your ad script... Use @image1 for product, @image2 for avatar."
-              rows={1}
-              className="w-full bg-transparent border-none text-white text-sm placeholder:text-white/20 focus:outline-none resize-none pt-1 leading-relaxed min-h-[44px] max-h-[300px] custom-scrollbar font-medium"
             />
           </div>
 
           {/* Bottom Row: Uploads + Controls + Generate */}
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-3 border-t border-white/[0.05]">
-            <div className="flex items-center gap-3 flex-wrap">
+          <PromptFooter>
+            <PromptControls>
               
               {/* Asset Uploads Group */}
               <div className="flex items-center gap-1.5 pr-3 border-r border-white/10">
@@ -507,13 +634,15 @@ export default function MarketingStudio({ apiKey, droppedFiles, onFilesHandled }
               <div className="relative">
                 <button
                   onClick={(e) => { e.stopPropagation(); setDropdown(dropdown === 'format' ? null : 'format'); }}
-                  className={`flex items-center gap-2 px-3 py-2 bg-white/[0.03] hover:bg-white/[0.08] rounded border transition-all group whitespace-nowrap ${dropdown === 'format' ? 'border-primary/50' : 'border-white/5'}`}
+                  className={promptControlClassName({
+                    active: dropdown === "format",
+                  })}
                 >
                   <div className="w-4 h-4 bg-primary/10 rounded flex items-center justify-center border border-primary/20">
                     <span className="text-[8px] font-black text-primary uppercase">U</span>
                   </div>
-                  <span className="text-sm font-bold text-white/70 group-hover:text-primary transition-colors">{params.format}</span>
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" className="opacity-20 group-hover:opacity-100 transition-opacity"><path d="M6 9l6 6 6-6" /></svg>
+                  <span className={PROMPT_CONTROL_LABEL_CLASS}>{params.format}</span>
+                  <PromptChevronIcon />
                 </button>
                 <Dropdown 
                   isOpen={dropdown === 'format'} 
@@ -527,25 +656,56 @@ export default function MarketingStudio({ apiKey, droppedFiles, onFilesHandled }
               </div>
 
               {/* Avatar Preset Button */}
-              <div className="relative">
+              <div className="relative flex items-center gap-1.5">
                 <button
                   onClick={(e) => { e.stopPropagation(); setDropdown(dropdown === 'avatar' ? null : 'avatar'); }}
-                  className={`flex items-center gap-2 px-3 py-2 bg-white/[0.03] hover:bg-white/[0.08] rounded border transition-all group whitespace-nowrap ${dropdown === 'avatar' ? 'border-primary/50' : 'border-white/5'}`}
+                  className={promptControlClassName({
+                    active: dropdown === "avatar",
+                  })}
                 >
                   <div className="w-4 h-4 rounded-full overflow-hidden border border-white/20 shadow-inner">
                     <img src={avatarImage || ASSETS.avatar[0].url} className="w-full h-full object-cover" />
                   </div>
-                  <span className="text-sm font-bold text-white/70 group-hover:text-primary transition-colors">
+                  <span className={PROMPT_CONTROL_LABEL_CLASS}>
                     {ASSETS.avatar.find(a => a.url === avatarImage)?.name || "Select Avatar"}
                   </span>
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" className="opacity-20 group-hover:opacity-100 transition-opacity"><path d="M6 9l6 6 6-6" /></svg>
+                  <PromptChevronIcon />
                 </button>
+
+                {avatarImage && (
+                  <button
+                    type="button"
+                    title="Enlarge selected avatar"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const currentAvatar = ASSETS.avatar.find(a => a.url === avatarImage);
+                      if (currentAvatar) {
+                        setPreviewAvatar(currentAvatar);
+                      } else {
+                        setPreviewAvatar({ id: "custom", name: "Custom Uploaded Avatar", url: avatarImage });
+                      }
+                    }}
+                    className={promptControlClassName({
+                      iconOnly: true,
+                      className: "text-white/40 hover:text-[#22d3ee]",
+                    })}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <circle cx="11" cy="11" r="8" />
+                      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                      <line x1="11" y1="8" x2="11" y2="14" />
+                      <line x1="8" y1="11" x2="14" y2="11" />
+                    </svg>
+                  </button>
+                )}
+
                 <Dropdown 
                   isOpen={dropdown === 'avatar'} 
                   title="Avatar Presets"
                   items={ASSETS.avatar} 
                   selectedId={avatarImage}
                   onSelect={(item) => setAvatarImage(item.url)}
+                  onPreview={(item) => setPreviewAvatar(item)}
                   onClose={() => setDropdown(null)}
                 />
               </div>
@@ -555,13 +715,34 @@ export default function MarketingStudio({ apiKey, droppedFiles, onFilesHandled }
                 <div key={key} className="relative">
                   <button
                     onClick={(e) => { e.stopPropagation(); setDropdown(dropdown === key ? null : key); }}
-                    className={`px-3 py-2 bg-white/[0.03] hover:bg-white/[0.08] rounded border transition-all text-sm font-bold ${dropdown === key ? 'border-primary/50 text-primary' : 'border-white/5 text-white/70'}`}
+                    className={promptControlClassName({
+                      active: dropdown === key,
+                      className:
+                        dropdown === key
+                          ? "text-xs font-semibold text-[#22d3ee]"
+                          : "text-xs font-semibold text-white/70",
+                    })}
                   >
-                    {key === 'duration' ? `${params[key]}s` : params[key]}
+                    {key === "ratio" ? (
+                      <PromptAspectRatioIcon />
+                    ) : key === "res" ? (
+                      <PromptQualityIcon />
+                    ) : (
+                      <PromptDurationIcon />
+                    )}
+                    <span className={PROMPT_CONTROL_LABEL_CLASS}>
+                      {key === "duration" ? `${params[key]}s` : params[key]}
+                    </span>
                   </button>
                   <SimpleDropdown 
                     isOpen={dropdown === key} 
-                    title={key === 'res' ? 'Resolution' : key.toUpperCase()} 
+                    title={
+                      key === "ratio"
+                        ? "Aspect Ratio"
+                        : key === "res"
+                          ? "Resolution"
+                          : "Duration"
+                    }
                     options={OPTIONS[key]} 
                     selected={params[key]} 
                     onSelect={(val) => setParams({ ...params, [key]: val })} 
@@ -569,31 +750,210 @@ export default function MarketingStudio({ apiKey, droppedFiles, onFilesHandled }
                   />
                 </div>
               ))}
-            </div>
+            </PromptControls>
 
-            <button
+            <PromptAction
               onClick={handleGenerate}
               disabled={isGenerating}
-              className="bg-primary text-black px-8 py-2.5 rounded font-bold text-base hover:bg-[#e5ff33] hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-3 shadow-glow disabled:opacity-50 disabled:grayscale z-10"
             >
               {isGenerating ? (
                 <>
-                  <div className="w-3 h-3 border-2 border-black/20 border-t-black rounded-full animate-spin" />
+                  <span className="animate-spin inline-block text-black">◌</span>
                   Generating...
                 </>
               ) : (
                 <span>Launch</span>
               )}
-            </button>
-          </div>
-        </div>
-      </div>
+            </PromptAction>
+          </PromptFooter>
+      </PromptComposer>
 
       {/* Fullscreen Preview */}
       {fullscreenUrl && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 backdrop-blur-sm animate-fade-in" onClick={() => setFullscreenUrl(null)}>
           <button className="absolute top-6 right-6 p-3 bg-white/10 hover:bg-white/20 rounded-full text-white border border-white/10 transition-colors shadow-2xl"><CloseSvg /></button>
           <video src={fullscreenUrl} controls autoPlay className="max-w-[95vw] max-h-[95vh] rounded-lg shadow-4xl animate-scale-up" onClick={e => e.stopPropagation()} />
+        </div>
+      )}
+
+      {/* ── AVATAR FULLSCREEN PREVIEW MODAL ── */}
+      {previewAvatar && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-md animate-fade-in select-none"
+          onClick={() => setPreviewAvatar(null)}
+        >
+          {/* Close button (cross) in the right corner */}
+          <button
+            type="button"
+            className="absolute top-6 right-6 p-3 bg-white/10 hover:bg-white/20 rounded-full text-white transition-colors border border-white/10 z-50 animate-fade-in"
+            onClick={(e) => {
+              e.stopPropagation();
+              setPreviewAvatar(null);
+            }}
+          >
+            <CloseSvg />
+          </button>
+
+          {/* Inject dynamic CSS animation keyframes */}
+          <style>{`
+            @keyframes slide-in-next {
+              0% {
+                transform: translateX(80px) scale(0.95);
+                filter: blur(4px);
+                opacity: 0.5;
+              }
+              100% {
+                transform: translateX(0) scale(1);
+                filter: blur(0);
+                opacity: 1;
+              }
+            }
+            @keyframes slide-in-prev {
+              0% {
+                transform: translateX(-80px) scale(0.95);
+                filter: blur(4px);
+                opacity: 0.5;
+              }
+              100% {
+                transform: translateX(0) scale(1);
+                filter: blur(0);
+                opacity: 1;
+              }
+            }
+            .animate-slide-next {
+              animation: slide-in-next 350ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            }
+            .animate-slide-prev {
+              animation: slide-in-prev 350ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            }
+          `}</style>
+
+          {/* Left Arrow Button */}
+          {previewAvatar.id !== "custom" && (
+            <button
+              type="button"
+              className="absolute left-6 p-4 bg-white/5 hover:bg-white/10 hover:text-primary rounded-full text-white transition-all border border-white/10 z-50"
+              onClick={(e) => {
+                e.stopPropagation();
+                const currentIndex = ASSETS.avatar.findIndex(a => a.id === previewAvatar.id);
+                if (currentIndex !== -1) {
+                  const prevAvatar = ASSETS.avatar[(currentIndex - 1 + ASSETS.avatar.length) % ASSETS.avatar.length];
+                  setSlideDirection("prev");
+                  setPreviewAvatar(prevAvatar);
+                }
+              }}
+            >
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="15 18 9 12 15 6" />
+              </svg>
+            </button>
+          )}
+
+          {/* Right Arrow Button */}
+          {previewAvatar.id !== "custom" && (
+            <button
+              type="button"
+              className="absolute right-6 p-4 bg-white/5 hover:bg-white/10 hover:text-primary rounded-full text-white transition-all border border-white/10 z-50"
+              onClick={(e) => {
+                e.stopPropagation();
+                const currentIndex = ASSETS.avatar.findIndex(a => a.id === previewAvatar.id);
+                if (currentIndex !== -1) {
+                  const nextAvatar = ASSETS.avatar[(currentIndex + 1) % ASSETS.avatar.length];
+                  setSlideDirection("next");
+                  setPreviewAvatar(nextAvatar);
+                }
+              }}
+            >
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </button>
+          )}
+
+          {/* Enlarged Image Card and side displays */}
+          <div className="flex items-center gap-6 md:gap-12 max-w-[95vw] justify-center relative">
+            {/* Previous Avatar Card (Left side) */}
+            {previewAvatar.id !== "custom" && (
+              <div
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const currentIndex = ASSETS.avatar.findIndex(a => a.id === previewAvatar.id);
+                  if (currentIndex !== -1) {
+                    const prevAvatar = ASSETS.avatar[(currentIndex - 1 + ASSETS.avatar.length) % ASSETS.avatar.length];
+                    setSlideDirection("prev");
+                    setPreviewAvatar(prevAvatar);
+                  }
+                }}
+                className="hidden md:flex flex-col items-center opacity-50 hover:opacity-60 scale-75 hover:scale-80 transition-all duration-300 cursor-pointer select-none max-w-[15vw] max-h-[50vh] rounded-xl overflow-hidden border border-white/5 bg-[#0d0d0f]/50"
+              >
+                <img
+                  src={ASSETS.avatar[(ASSETS.avatar.findIndex(a => a.id === previewAvatar.id) - 1 + ASSETS.avatar.length) % ASSETS.avatar.length].url}
+                  alt="Previous Avatar"
+                  className="w-full h-full object-cover aspect-[3/4]"
+                />
+              </div>
+            )}
+
+            {/* Main Active Avatar Card */}
+            <div
+              key={previewAvatar.id}
+              className={`relative flex flex-col items-center max-w-[90vw] md:max-w-[45vw] max-h-[85vh] z-10 ${
+                slideDirection === "next" ? "animate-slide-next" : "animate-slide-prev"
+              }`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="relative rounded-2xl overflow-hidden border border-white/10 bg-[#0d0d0f] shadow-2xl">
+                <img
+                  src={previewAvatar.url}
+                  alt={previewAvatar.name}
+                  className="max-w-[80vw] md:max-w-[40vw] max-h-[70vh] md:max-h-[65vh] object-contain"
+                />
+                
+                {/* Overlay with Name of the Avatar */}
+                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-4 pt-10 flex flex-col items-center justify-end gap-3">
+                  <h2 className="text-xl font-black text-white tracking-wide uppercase">
+                    {previewAvatar.name}
+                  </h2>
+                  
+                  {/* Select button on the enlarged image */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAvatarImage(previewAvatar.url);
+                      setPreviewAvatar(null);
+                      setDropdown(null);
+                    }}
+                    className="bg-[#22d3ee] text-black px-6 py-2.5 rounded-full font-bold text-sm hover:opacity-95 hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-1.5 shadow-lg shadow-[#22d3ee]/20"
+                  >
+                    <CheckSvg />
+                    Select Avatar
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Next Avatar Card (Right side) */}
+            {previewAvatar.id !== "custom" && (
+              <div
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const currentIndex = ASSETS.avatar.findIndex(a => a.id === previewAvatar.id);
+                  if (currentIndex !== -1) {
+                    const nextAvatar = ASSETS.avatar[(currentIndex + 1) % ASSETS.avatar.length];
+                    setSlideDirection("next");
+                    setPreviewAvatar(nextAvatar);
+                  }
+                }}
+                className="hidden md:flex flex-col items-center opacity-50 hover:opacity-60 scale-75 hover:scale-80 transition-all duration-300 cursor-pointer select-none max-w-[15vw] max-h-[50vh] rounded-xl overflow-hidden border border-white/5 bg-[#0d0d0f]/50"
+              >
+                <img
+                  src={ASSETS.avatar[(ASSETS.avatar.findIndex(a => a.id === previewAvatar.id) + 1) % ASSETS.avatar.length].url}
+                  alt="Next Avatar"
+                  className="w-full h-full object-cover aspect-[3/4]"
+                />
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

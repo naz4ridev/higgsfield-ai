@@ -1,7 +1,10 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import toast, { Toaster } from "react-hot-toast";
 import { generateAudio, uploadFile } from "../muapi.js";
+import { formatErrorMessage } from "../utils/formatError.js";
+import { scopedPersistKey, migrateLegacyPersistKey } from "../persistKey.js";
 import { audioModels, getAudioModelById } from "../models.js";
 
 // ---------------------------------------------------------------------------
@@ -474,18 +477,39 @@ function PremiumAudioPlayer({ url, title }) {
 // ---------------------------------------------------------------------------
 export default function AudioStudio({
   apiKey,
+  onGenerationStart,
+  onGenerationEnd,
   onGenerationComplete,
+  onGenerationError,
   historyItems,
   droppedFiles,
   onFilesHandled,
 }) {
-  const PERSIST_KEY = "hg_audio_studio_persistent";
+  const LEGACY_PERSIST_KEY = "hg_audio_studio_persistent";
+  const PERSIST_KEY = scopedPersistKey(LEGACY_PERSIST_KEY, apiKey);
+  useEffect(() => {
+    migrateLegacyPersistKey(LEGACY_PERSIST_KEY, PERSIST_KEY);
+  }, [PERSIST_KEY]);
 
   // ── Mode & model state ──────────────────────────────────────────────────
   const [selectedModelId, setSelectedModelId] = useState(audioModels[0]?.id ?? "");
   const [params, setParams] = useState({});
   const [openDropdown, setOpenDropdown] = useState(false);
+  const [openParamDropdown, setOpenParamDropdown] = useState(null);
   const modelBtnRef = useRef(null);
+  const sidebarRef = useRef(null);
+
+  // Close dropdowns on outside click
+  useEffect(() => {
+    const handler = (e) => {
+      if (sidebarRef.current && !sidebarRef.current.contains(e.target)) {
+        setOpenDropdown(false);
+        setOpenParamDropdown(null);
+      }
+    };
+    window.addEventListener("click", handler);
+    return () => window.removeEventListener("click", handler);
+  }, []);
 
   // ── Generation state ──────────────────────────────────────────────────
   const [isGenerating, setIsGenerating] = useState(false);
@@ -617,6 +641,7 @@ export default function AudioStudio({
       }
     }
 
+    onGenerationStart?.();
     setIsGenerating(true);
     setGenerateError(null);
 
@@ -660,9 +685,12 @@ export default function AudioStudio({
       }
     } catch (e) {
       console.error("[AudioStudio]", e);
-      setGenerateError(e.message?.slice(0, 100) ?? "Audio generation failed");
+      const errMsg = formatErrorMessage(e, "Audio generation failed");
+      if (onGenerationError) onGenerationError(errMsg);
+      else toast.error(errMsg);
     } finally {
       setIsGenerating(false);
+      onGenerationEnd?.();
     }
   };
 
@@ -677,7 +705,7 @@ export default function AudioStudio({
     <div className="w-full h-full flex bg-app-bg text-white overflow-hidden relative">
       
       {/* ─── LEFT CONFIGURATION SIDEBAR ─── */}
-      <div className="w-full lg:w-[400px] border-r border-zinc-900 flex flex-col bg-zinc-950/40 backdrop-blur-lg flex-shrink-0 z-30">
+      <div ref={sidebarRef} className="w-full lg:w-[400px] border-r border-zinc-900 flex flex-col bg-zinc-950/40 backdrop-blur-lg flex-shrink-0 z-30">
         <div className="p-6 overflow-y-auto flex-1 custom-scrollbar space-y-6 pb-24">
           
           {/* Model Selector */}
@@ -791,22 +819,47 @@ export default function AudioStudio({
               }
               // Enum Dropdowns
               if (schema.enum) {
+                const isOpen = openParamDropdown === key;
                 return (
-                  <div key={key} className="space-y-2">
-                    <label className="block text-xs font-bold text-zinc-200 uppercase tracking-wider">
+                  <div key={key} className="space-y-2 relative">
+                    <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider">
                       {schema.title || key}
                     </label>
-                    <select
-                      value={params[key] || ""}
-                      onChange={(e) => setParams(prev => ({ ...prev, [key]: e.target.value }))}
-                      className="w-full bg-zinc-900 border border-zinc-700 hover:border-zinc-600 rounded px-4 py-3 text-xs text-white focus:outline-none focus:border-primary transition-all cursor-pointer"
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenDropdown(false);
+                        setOpenParamDropdown(isOpen ? null : key);
+                      }}
+                      className="w-full bg-zinc-900 border border-zinc-700 hover:border-zinc-600 rounded px-4 py-3.5 text-xs text-left font-bold text-white flex items-center justify-between transition-all cursor-pointer"
                     >
-                      {schema.enum.map((opt) => (
-                        <option key={opt} value={opt} className="bg-zinc-900 text-white text-xs">
-                          {opt}
-                        </option>
-                      ))}
-                    </select>
+                      <span>{params[key] || "Select option"}</span>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={`transition-transform duration-200 ${isOpen ? 'rotate-185' : ''}`}>
+                        <polyline points="6 9 12 15 18 9" />
+                      </svg>
+                    </button>
+
+                    {isOpen && (
+                      <div className="absolute left-0 right-0 mt-1 z-50 bg-[#161618] border border-zinc-700 rounded shadow-3xl max-h-60 overflow-y-auto custom-scrollbar p-1">
+                        {schema.enum.map((opt) => (
+                          <button
+                            key={opt}
+                            type="button"
+                            onClick={() => {
+                              setParams(prev => ({ ...prev, [key]: opt }));
+                              setOpenParamDropdown(null);
+                            }}
+                            className={`w-full text-left px-4 py-2.5 rounded text-xs font-bold transition-all border ${
+                              params[key] === opt
+                                ? "text-primary bg-primary/10 border-primary/20"
+                                : "text-zinc-200 border-transparent hover:bg-zinc-900 hover:text-white"
+                            }`}
+                          >
+                            {opt}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     {schema.description && (
                       <span className="block text-[11px] text-zinc-300 leading-normal">
                         {schema.description}
@@ -1064,6 +1117,7 @@ export default function AudioStudio({
         </div>
 
       </div>
+      <Toaster position="top-right" containerStyle={{ zIndex: 99999 }} toastOptions={{ duration: 5000, style: { background: '#18181b', color: '#ffffff', border: '1px solid rgba(255,255,255,0.15)', fontSize: '13px', borderRadius: '12px', boxShadow: '0 10px 30px rgba(0,0,0,0.6)', maxWidth: '440px', wordBreak: 'break-word', whiteSpace: 'pre-wrap', padding: '12px 16px' } }} />
     </div>
   );
 }

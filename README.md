@@ -3,9 +3,12 @@
 [![Powered by MuAPI](https://img.shields.io/badge/Powered%20by-MuAPI-6366f1?style=flat-square&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyQzYuNDggMiAyIDYuNDggMiAxMnM0LjQ4IDEwIDEwIDEwIDEwLTQuNDggMTAtMTBTMTcuNTIgMiAxMiAyem0tMSAxNHYtNGgtMnYtMmg0djZoLTJ6bTAtOFY2aDJ2MmgtMnoiLz48L3N2Zz4=)](https://muapi.ai?utm_source=github&utm_medium=badge&utm_campaign=open-generative-ai)
 
 
-> **The free, open-source alternative to AI Video Platforms.** Generate AI images and videos using 200+ state-of-the-art models — no content filters, no closed ecosystem, no subscription fees.
+> **The free, open-source alternative to AI Video Platforms.** Generate AI images and videos using 400+ state-of-the-art models across 14 studios — no content filters, no closed ecosystem, no subscription fees.
 
 **Community:** Join [Discord](https://discord.gg/tANKJkHck) for discussions and support
+
+<p align="center"><a href="https://youtu.be/pq0B_A0K770"><img src="https://i.ytimg.com/vi/pq0B_A0K770/maxresdefault.jpg" width="720"></a></p>
+<p align="center"><a href="https://youtu.be/pq0B_A0K770"><b>▶ Watch: How to Get Exclusive Access to Flux 3 video without restrictions</b></a></p>
 
 <p align="center">
   <a href="https://github.com/Anil-matcha/awesome-generative-ai-apps">
@@ -15,7 +18,46 @@
 
 > 🎨 **[Explore 50+ more open-source AI apps →](https://github.com/Anil-matcha/awesome-generative-ai-apps)**
 
+## 💰 Turn This Into Your Own Product — White Label & Resell
+
+Want to launch this as **your own branded AI studio** and charge your own customers for it? [MuAPI White Label](https://muapi.ai/white-label?utm_source=github&utm_medium=readme&utm_campaign=open-generative-ai) lets you spin up a fully white-labeled version of this app — your logo, your colors, your custom domain, your own pricing — with zero infra to manage. You keep the markup on every generation; MuAPI handles the models, the queue, and the billing plumbing underneath.
+
+- **Your branding** — logo, color theme, and a custom domain (e.g. `studio.yourbrand.com`)
+- **Your pricing** — set your own credit/subscription prices for end users, keep the margin
+- **No infra** — no servers, workers, or model hosting to run yourself
+- **All studios included** — Image, Video, Audio, Lip Sync, Cinema, Workflows, and more, depending on plan
+
+Plans start at $49/mo. [Get started with White Label →](https://muapi.ai/white-label?utm_source=github&utm_medium=readme&utm_campaign=open-generative-ai)
+
+### What similar AI studios charge their users
+
+Consumer AI image/video platforms almost all run on paid monthly subscriptions — this is the same playbook you'd run under your own brand:
+
+| Platform | Typical subscription range |
+|---|---|
+| Midjourney | ~$10–$120/mo (Basic → Mega) |
+| Runway | ~$12–$76/mo (Standard → Unlimited), custom Enterprise |
+| Kling AI | ~$10–$92/mo across Standard → Premier tiers |
+| Luma Dream Machine | ~$10–$100+/mo |
+| Pika | ~$8–$58/mo |
+
+*(Figures are approximate, general-market ranges and change over time — check each platform's current pricing page before quoting them.)* With MuAPI White Label, you set these numbers yourself for your own end users — the subscription revenue is yours.
+
+---
+
 ## Related Projects
+
+> 🎞️ **MiniMax H3 API Python SDK:** [MiniMax-H3-API](https://github.com/Anil-matcha/MiniMax-H3-API) — Python SDK for MiniMax H3 text-to-video, image-to-video, and first/last-frame video workflows through Muapi.
+
+> 📝 **MiniMax H3 prompt gallery:** [awesome-minimax-h3-prompts](https://github.com/Anil-matcha/awesome-minimax-h3-prompts) — runnable MuAPI examples and creator-ready prompt references for MiniMax H3 video generation.
+
+> 🌊 **Wan 3.0 API Python SDK:** [Wan-3.0-API](https://github.com/Anil-matcha/Wan-3.0-API) — Python SDK and MCP server for Wan 3.0-compatible text-to-video, image-to-video, multimodal references, uploads, and asynchronous generation jobs.
+
+> 🆕 **FLUX 3 Python SDK:** [Flux-3-Dev-API](https://github.com/Anil-matcha/Flux-3-Dev-API) — Python wrapper for Black Forest Labs' newly announced FLUX 3 — text-to-image, image-to-image, text-to-video, and image-to-video through one client, including the fast/low-cost Dev variant.
+
+> 🎬 **FLUX 3 video, specifically:** [flux-3-video-api](https://github.com/SamurAIGPT/flux-3-video-api) — a focused Python wrapper for just the FLUX 3 Text-to-Video and Image-to-Video endpoints, with native synchronized audio.
+
+> 🎓 **Learn to monetize generative AI:** [ai-creator-academy](https://github.com/Anil-matcha/ai-creator-academy) — a free, open-source curriculum teaching creators, freelancers, and agencies how to make money with generative AI image/video/audio tools, covering monetization, pricing, and client delivery — not just how the models work.
 
 > 🤖 **Automate media generations with AI coding agents:** [Generative-Media-Skills](https://github.com/SamurAIGPT/Generative-Media-Skills) — a library of skills that let agents like **Claude Code**, **Codex**, and other coding assistants drive 200+ image/video models end-to-end (prompt → generate → edit → stitch) directly from your terminal. Perfect for building automated media pipelines without touching a UI.
 
@@ -23,9 +65,12 @@
 
 > 🎥 **Seedance 2.5 Python SDK:** [Seedance-2.5-API](https://github.com/SamurAIGPT/Seedance-2.5-API) — Python wrapper for ByteDance's Seedance 2.5 API — text-to-video, image-to-video, realistic human faces, character consistency.
 
+> 🧩 **Seedance 2.5 ComfyUI pack:** [seedance2.5-comfyui](https://github.com/Anil-matcha/seedance2.5-comfyui) — native ComfyUI nodes and example workflows for the same MuAPI video model.
+
+> 🤖 **Seedance MCP servers:** [seedance-2-mcp](https://github.com/Anil-matcha/seedance-2-mcp) and [seedance-2.5-mcp](https://github.com/Anil-matcha/seedance-2.5-mcp) — focused MCP tools for driving Seedance 2 and Seedance 2.5 from Claude, Cursor, and other AI assistants.
+
 > 🍌 **Claude Fable 5 use cases + 20% off on MuAPI:** [awesome-claude-fable-5](https://github.com/Anil-matcha/awesome-claude-fable-5) — 60 curated real-world use cases, prompts, and benchmarks for Claude Fable 5, with **20% off Fable 5 access** via [MuAPI](https://muapi.ai/pricing?utm_source=github&utm_medium=readme&utm_campaign=open-generative-ai).
 
-- [Vadoo](https://vadoo.tv) — Unrestricted AI image & video generation → auto-publish as YouTube Shorts and TikToks & earn
 - [AI-Youtube-Shorts-Generator](https://github.com/SamurAIGPT/AI-Youtube-Shorts-Generator) — Auto-generate viral YouTube Shorts from long-form videos using AI
 - [muapi-cli](https://github.com/SamurAIGPT/muapi-cli) — Official CLI for MuAPI — run these models from your terminal
 - [Vibe-Workflow](https://github.com/SamurAIGPT/Vibe-Workflow) — Node-based AI workflow builder for generative image & video pipelines
@@ -36,6 +81,10 @@
 - [Free-AI-Social-Media-Scheduler](https://github.com/Anil-matcha/Free-AI-Social-Media-Scheduler) — Free open-source AI social media scheduler — self-hostable alternative to Buffer and Hootsuite
 - [awesome-seedance-2.5-api-prompts](https://github.com/Anil-matcha/awesome-seedance-2.5-api-prompts) — Curated Seedance 2.5 API guide, prompts, camera controls, and video generation examples
 - [AI-Voice-Agent](https://github.com/Anil-matcha/AI-Voice-Agent) — Self-hosted AI voice agent for real-time voice conversations, sales calls, and customer support
+- [awesome-ai-video-models](https://github.com/Anil-matcha/awesome-ai-video-models) — compare AI video models by API, price & speed
+- [awesome-ai-image-models](https://github.com/Anil-matcha/awesome-ai-image-models) — compare AI image models by API, price & quality
+- [awesome-flux-3-api-prompts](https://github.com/Anil-matcha/awesome-flux-3-api-prompts) — FLUX 3 API guide, prompts, and parameters
+- [wan-3.0-comfyui](https://github.com/Anil-matcha/wan-3.0-comfyui) — ComfyUI custom nodes for Wan 3.0 text-to-image, image edit, text-to-video, and image-to-video via MuAPI.
 
 ## 🌐 Try it Online — No Install Required
 
@@ -261,9 +310,18 @@ A healthy run on Apple Silicon prints `total params memory size = 1969.78MB (VRA
 - **Local Inference** — Two engines: **sd.cpp** (bundled, runs on Mac/Win/Linux with Metal/CUDA/Vulkan/ROCm) for SD 1.5, SDXL, and Z-Image; and **Wan2GP** (BYO Gradio server) for Flux, Qwen-Image, and video models (Wan 2.2, Hunyuan, LTX). Configure both in Settings → Local Models.
 - **Multi-Image Input** — Upload up to 14 reference images for compatible edit models (Nano Banana 2 Edit, Flux Kontext Dev, GPT-4o Edit, and more). Multi-select picker with order badges, batch upload, and a "Use Selected" confirmation flow.
 - **Video Studio** — Generate videos from text prompts (40+ text-to-video models) or animate a start-frame image (60+ image-to-video models). Same intelligent mode switching as Image Studio.
+- **Audio Studio** — Generate and edit AI audio/music from text prompts.
+- **AI Clipping** — Auto-clip and extract highlights from longer video content.
+- **Vibe Motion Studio** — Motion/animation generation studio for stylized video effects.
 - **Lip Sync Studio** — Animate portrait images or sync lips on existing videos using audio. 9 dedicated models across two modes: portrait image + audio → talking video, and video + audio → lipsync video.
+- **Body Swap (Recast) Studio** — Swap/recast a subject's body or appearance in an image or video.
 - **Cinema Studio** — Interface for photorealistic cinematic shots with pro camera controls (Lens, Focal Length, Aperture)
+- **Marketing Studio** — Generate ad and marketing-ready creative variations from a single input.
 - **Workflow Studio** — Build and run multi-step AI pipelines visually. Chain image, video, and audio models into automated flows. Browse community templates, create your own with a node-based editor, and run them via an interactive playground.
+- **Agent Studio** — Multi-turn creative agent that plans and executes generation tasks conversationally.
+- **Design Agent Studio** — Canvas-based autonomous design agent for iterative visual work.
+- **Explore Apps** — Directory of app templates and use-cases built on the same model catalog.
+- **AI Influencer Studio** — Tools for creating and managing consistent AI persona/influencer content.
 - **Upload History** — Reference images are uploaded once and stored locally. A picker panel lets you reuse any previously uploaded image across sessions — no re-uploading.
 - **Smart Controls** — Dynamic aspect ratio, resolution/quality, and duration pickers that adapt to each model's capabilities (including t2i models with resolution or quality options)
 - **Generation History** — Browse, revisit, and download all past generations (persisted in browser storage)
@@ -493,8 +551,8 @@ Open-Generative-AI/
 ├── packages/
 │   └── studio/                 # Shared React component library
 │       └── src/
-│           ├── index.js        # Exports: ImageStudio, VideoStudio, AudioStudio, ClippingStudio, VibeMotionStudio, LipSyncStudio, CinemaStudio, MarketingStudio, WorkflowStudio, AgentStudio, DesignAgentStudio, AppsStudio, McpCliStudio
-│           ├── models.js       # 200+ model definitions (single source of truth)
+│           ├── index.js        # Exports: ImageStudio, VideoStudio, AudioStudio, ClippingStudio, VibeMotionStudio, LipSyncStudio, RecastStudio, CinemaStudio, MarketingStudio, WorkflowStudio, AgentStudio, DesignAgentStudio, AppsStudio, AiInfluencerStudio, McpCliStudio
+│           ├── models.js       # 400+ model definitions (single source of truth)
 │           ├── muapi.js        # API client (named exports, apiKey as first param)
 │           └── components/
 │               ├── ImageStudio.jsx    # Dual-mode t2i/i2i studio
@@ -526,11 +584,16 @@ Lip sync jobs use the same two-step pattern: a dedicated `processLipSync()` meth
 
 | Category | Count | Examples |
 |---|---|---|
-| **Text-to-Image** | 50+ | Flux Dev, Nano Banana 2, Seedream 5.0, Ideogram v3, Midjourney v7, GPT-4o, SDXL |
-| **Image-to-Image** | 55+ | Nano Banana 2 Edit (×14), Flux Kontext Pro, GPT-4o Edit, Seededit v3, Upscaler, Background Remover |
-| **Text-to-Video** | 40+ | Kling v3, Sora 2, Veo 3, Wan 2.6, Seedance 2.0, Seedance 2.0 Extend, Seedance Pro, Hailuo 2.3, Runway Gen-3 |
-| **Image-to-Video** | 60+ | Kling v2.1 I2V, Veo3 I2V, Runway I2V, Seedance 2.0 I2V, Midjourney v7 I2V, Hunyuan I2V, Wan2.2 I2V |
-| **Lip Sync** | 9 | Infinite Talk I2V, Wan 2.2 Speech to Video, LTX 2.3 Lipsync, LTX 2 19B Lipsync, Sync, LatentSync, Creatify, Veed, Infinite Talk V2V |
+| **Text-to-Image** | 70+ | Flux Dev, Nano Banana 2, Seedream 5.0, Ideogram v3, Midjourney v7, GPT-4o, SDXL |
+| **Image-to-Image** | 70+ | Nano Banana 2 Edit (×14), Flux Kontext Pro, GPT-4o Edit, Seededit v3, Upscaler, Background Remover |
+| **Text-to-Video** | 85+ | Kling v3, Sora 2, Veo 3, Wan 2.6, Seedance 2.0, Seedance 2.0 Extend, Seedance Pro, Hailuo 2.3, Runway Gen-3 |
+| **Image-to-Video** | 120+ | Kling v2.1 I2V, Veo3 I2V, Runway I2V, Seedance 2.0 I2V, Midjourney v7 I2V, Hunyuan I2V, Wan2.2 I2V |
+| **Video-to-Video** | 35+ | Video effects, AI Clipping, Vibe Motion, video-conditioned edits |
+| **Lip Sync** | 15 | Infinite Talk I2V, Wan 2.2 Speech to Video, LTX 2.3 Lipsync, LTX 2 19B Lipsync, Sync, LatentSync, Creatify, Veed, Infinite Talk V2V |
+| **Body Swap / Recast** | 3 | Subject/appearance recast across image and video |
+| **Audio** | 15+ | Text-to-music, remix, and audio editing models |
+
+(Counts verified against `packages/studio/src/models.js` — total 420+ models across these 8 categories, plus additional models surfaced through Marketing, Agent, and Design Agent studios.)
 
 ## 🛠️ Tech Stack
 
@@ -549,7 +612,7 @@ Lip sync jobs use the same two-step pattern: a dedicated `processLipSync()` meth
 | **Cost** | Subscription-based | Free (open-source) |
 | **Content filters** | Yes — prompts blocked or altered | None |
 | **Restrictions** | Platform guardrails enforced | Full creative freedom |
-| **Models** | Proprietary | 200+ open & commercial models |
+| **Models** | Proprietary | 400+ open & commercial models |
 | **Multi-image input** | Limited | Up to 14 images per request |
 | **Lip sync** | No | 9 models, image & video modes |
 | **Hosted version** | Subscription | Free at [muapi.ai/open-generative-ai](https://muapi.ai/open-generative-ai?utm_source=github&utm_medium=readme&utm_campaign=open-generative-ai) |

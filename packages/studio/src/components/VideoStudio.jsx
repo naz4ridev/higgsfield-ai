@@ -1,7 +1,14 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import toast, { Toaster } from "react-hot-toast";
 import { generateVideo, generateI2V, processV2V, uploadFile } from "../muapi.js";
+import { formatErrorMessage } from "../utils/formatError.js";
+import { scopedPersistKey, migrateLegacyPersistKey } from "../persistKey.js";
+import DrawModal from "./DrawModal.jsx";
+import MobileGenerationActions, {
+  GenerationCopyButtons,
+} from "./MobileGenerationActions.jsx";
 import {
   t2vModels,
   i2vModels,
@@ -17,6 +24,25 @@ import {
   getModesForModel,
   getMaxImagesForI2VModel,
 } from "../models.js";
+import {
+  PROMPT_CONTROL_LABEL_CLASS,
+  PROMPT_MEDIA_PREVIEW_CLASS,
+  PromptAspectRatioIcon,
+  PromptAction,
+  PromptChevronIcon,
+  PromptComposer,
+  PromptControls,
+  PromptFooter,
+  PromptMenuItem,
+  PromptMenuList,
+  PromptPopover,
+  PromptPopoverHeader,
+  PromptDurationIcon,
+  PromptQualityIcon,
+  PromptTextarea,
+  promptControlClassName,
+  promptMediaButtonClassName,
+} from "./prompt/PromptComposer.jsx";
 
 // ── tiny helpers ──────────────────────────────────────────────────────────────
 
@@ -90,44 +116,134 @@ const VideoReadySvg = () => (
 
 // ── Dropdown components ───────────────────────────────────────────────────────
 
-function DropdownItem({ label, selected, onClick }) {
-  return (
-    <div
-      className="flex items-center justify-between p-3.5 hover:bg-white/5 rounded-2xl cursor-pointer transition-all group"
-      onClick={onClick}
-    >
-      <span className="text-xs font-bold text-white opacity-80 group-hover:opacity-100 capitalize">
-        {label}
-      </span>
-      {selected && <CheckSvg />}
-    </div>
-  );
-}
+const PROVIDER_LOGOS = {
+  openai: "https://cdn.muapi.ai/models/openai.png",
+  google: "https://cdn.muapi.ai/models/gemini.png",
+  kling: "https://cdn.muapi.ai/models/kling.png",
+  alibaba: "https://cdn.muapi.ai/models/alibaba.png",
+  bytedance: "https://cdn.muapi.ai/models/bytedance.png",
+  blackforest: "https://cdn.muapi.ai/models/bfl.png",
+  minimax: "https://cdn.muapi.ai/models/minimax.png",
+  suno: "https://cdn.muapi.ai/models/suno.png",
+  anthropic: "https://cdn.muapi.ai/models/claude.png",
+  meshy: "https://cdn.muapi.ai/models/meshy-3.png",
+  tripo3d: "https://cdn.muapi.ai/models/tripo3d.png",
+  grok: "https://cdn.muapi.ai/models/xai.png",
+  muapi: "https://cdn.muapi.ai/models/muapi.png",
+  midjourney: "https://cdn.muapi.ai/models/midjourney.png",
+  vidu: "https://cdn.muapi.ai/models/vidu.png",
+  runway: "https://cdn.muapi.ai/models/runway.png",
+  luma: "https://cdn.muapi.ai/models/luma.png",
+  ideogram: "https://cdn.muapi.ai/models/ideogram.png",
+  leonardoai: "https://cdn.muapi.ai/models/leonardoai.png",
+  hunyuan: "https://cdn.muapi.ai/models/hunyuan.png",
+  hidream: "https://cdn.muapi.ai/models/hidream.png",
+  lightricks: "https://cdn.muapi.ai/models/lightricks.png",
+  pixverse: "https://cdn.muapi.ai/models/pixverse.png",
+  reve: "https://cdn.muapi.ai/models/reve.png",
+  stability: "https://cdn.muapi.ai/models/stability.png"
+};
+
+const invertLogos = ['openai', 'blackforest', 'runway', 'ideogram', 'lightricks', 'grok'];
 
 function ModelDropdown({ imageMode, selectedModel, onSelect, onClose }) {
   const [search, setSearch] = useState("");
-
   const generationModels = imageMode ? i2vModels : t2vModels;
+  
+  // Find current model's provider to pre-select the provider tab ("slide")
+  const allCurrentModels = [...generationModels, ...v2vModels];
+  const currentModelObj = allCurrentModels.find((m) => m.id === selectedModel);
+  const initialProvider = currentModelObj?.provider || "all";
+  const [selectedProvider, setSelectedProvider] = useState(initialProvider);
+
+  const activeItemRef = useRef(null);
+
+  useEffect(() => {
+    // Automatically scroll the active model into view when opening
+    if (activeItemRef.current) {
+      activeItemRef.current.scrollIntoView({ block: "nearest" });
+    }
+  }, []);
+
+  const getProviderStyle = (provider) => {
+    switch (provider) {
+      case "grok":
+        return { text: "xI", bg: "bg-orange-500/10 text-orange-400 border-orange-500/25" };
+      case "openai":
+        return { text: "O", bg: "bg-emerald-500/10 text-emerald-400 border-emerald-500/25" };
+      case "google":
+        return { text: "G", bg: "bg-blue-500/10 text-blue-400 border-blue-500/25" };
+      case "blackforest":
+        return { text: "BF", bg: "bg-amber-500/10 text-amber-400 border-amber-500/25" };
+      case "bytedance":
+        return { text: "BD", bg: "bg-purple-500/10 text-purple-400 border-purple-500/25" };
+      case "midjourney":
+        return { text: "MJ", bg: "bg-indigo-500/10 text-indigo-400 border-indigo-500/25" };
+      case "kling":
+        return { text: "KL", bg: "bg-rose-500/10 text-rose-400 border-rose-500/25" };
+      case "vidu":
+        return { text: "VD", bg: "bg-cyan-500/10 text-cyan-400 border-cyan-500/25" };
+      case "minimax":
+        return { text: "MX", bg: "bg-pink-500/10 text-pink-400 border-pink-500/25" };
+      case "ideogram":
+        return { text: "ID", bg: "bg-yellow-500/10 text-yellow-400 border-yellow-500/25" };
+      case "luma":
+        return { text: "LM", bg: "bg-teal-500/10 text-teal-400 border-teal-500/25" };
+      case "alibaba":
+        return { text: "AL", bg: "bg-sky-500/10 text-sky-400 border-sky-500/25" };
+      case "leonardoai":
+        return { text: "LE", bg: "bg-violet-500/10 text-violet-400 border-violet-500/25" };
+      case "stability":
+        return { text: "SD", bg: "bg-fuchsia-500/10 text-fuchsia-400 border-fuchsia-500/25" };
+      default:
+        const name = provider ? provider.toUpperCase() : "AI";
+        return { text: name.substring(0, 2), bg: "bg-primary/10 text-primary border-primary/25" };
+    }
+  };
+
+  // Dynamically compute list of providers from the input models lists
+  const availableProviders = [];
+  const seenProviders = new Set();
+  
+  allCurrentModels.forEach(m => {
+    const pId = m.provider || 'muapi';
+    const pName = m.provider_name || 'Muapi';
+    if (!seenProviders.has(pId)) {
+      seenProviders.add(pId);
+      availableProviders.push({ id: pId, name: pName });
+    }
+  });
 
   const lf = search.toLowerCase();
-  const filteredMain = generationModels.filter(
-    (m) => m.name.toLowerCase().includes(lf) || m.id.toLowerCase().includes(lf),
-  );
-  const filteredV2V = v2vModels.filter(
-    (m) => m.name.toLowerCase().includes(lf) || m.id.toLowerCase().includes(lf),
-  );
+
+  const filterFn = (m) => {
+    // 1. Filter by provider tab
+    if (selectedProvider !== "all") {
+      const pId = m.provider || 'muapi';
+      if (pId !== selectedProvider) return false;
+    }
+    // 2. Filter by search query
+    return (
+      m.name.toLowerCase().includes(lf) ||
+      m.id.toLowerCase().includes(lf)
+    );
+  };
+
+  const filteredMain = generationModels.filter(filterFn);
+  const filteredV2V = v2vModels.filter(filterFn);
 
   const getIconColor = (m, isV2V) => {
-    if (isV2V) return "bg-orange-500/10 text-orange-400";
-    if (m.id.includes("kling")) return "bg-blue-500/10 text-blue-400";
-    if (m.id.includes("veo")) return "bg-purple-500/10 text-purple-400";
-    if (m.id.includes("sora")) return "bg-rose-500/10 text-rose-400";
-    return "bg-primary/10 text-primary";
+    if (isV2V) return "bg-orange-500/10 text-orange-400 border-orange-500/10";
+    if (m.id.includes("kling")) return "bg-blue-500/10 text-blue-400 border-blue-500/10";
+    if (m.id.includes("veo")) return "bg-purple-500/10 text-purple-400 border-purple-500/10";
+    if (m.id.includes("sora")) return "bg-rose-500/10 text-rose-400 border-rose-500/10";
+    return "bg-primary/10 text-primary border-primary/10";
   };
 
   const renderItem = (m, isV2V = false) => (
     <div
       key={m.id}
+      ref={selectedModel === m.id ? activeItemRef : null}
       className={`flex items-center justify-between p-3.5 hover:bg-white/5 rounded-2xl cursor-pointer transition-all border border-transparent hover:border-white/5 ${selectedModel === m.id ? "bg-white/5 border-white/5" : ""}`}
       onClick={(e) => {
         e.stopPropagation();
@@ -136,19 +252,35 @@ function ModelDropdown({ imageMode, selectedModel, onSelect, onClose }) {
       }}
     >
       <div className="flex items-center gap-3.5">
-        <div
-          className={`w-10 h-10 ${getIconColor(m, isV2V)} border border-white/5 rounded-xl flex items-center justify-center font-black text-sm shadow-inner uppercase`}
-        >
-          {m.name.charAt(0)}
-        </div>
-        <div className="flex flex-col gap-0.5">
-          <span className="text-xs font-bold text-white tracking-tight">
+        {PROVIDER_LOGOS[m.provider] ? (
+          <div className="w-8 h-8 rounded-xl border border-white/5 overflow-hidden shrink-0 flex items-center justify-center bg-white/[0.02]">
+            <img
+              src={PROVIDER_LOGOS[m.provider]}
+              alt={m.provider_name}
+              className={`w-full h-full object-contain p-1 ${invertLogos.includes(m.provider) ? "invert" : ""}`}
+            />
+          </div>
+        ) : (
+          <div
+            className={`w-9 h-9 ${getIconColor(m, isV2V)} border rounded-xl flex items-center justify-center font-black text-xs shadow-inner uppercase`}
+          >
+            {m.name.charAt(0)}
+          </div>
+        )}
+        <div className="flex flex-col gap-0.5 min-w-0">
+          <span className="text-xs font-bold text-white tracking-tight truncate">
             {m.name}
           </span>
-          {isV2V && (
+          {isV2V ? (
             <span className="text-[9px] text-orange-400/70">
               {m.imageField ? "Upload a video and image" : "Upload a video to use"}
             </span>
+          ) : (
+            selectedProvider === "all" && m.provider_name && (
+              <span className="text-[9px] text-white/40">
+                {m.provider_name}
+              </span>
+            )
           )}
         </div>
       </div>
@@ -156,78 +288,117 @@ function ModelDropdown({ imageMode, selectedModel, onSelect, onClose }) {
     </div>
   );
 
+  const invertLogos = ['openai', 'blackforest', 'runway', 'ideogram', 'lightricks', 'grok'];
+
   return (
-    <div className="flex flex-col h-full max-h-[70vh]">
-      <div className="px-2 pb-3 mb-2 border-b border-white/5 shrink-0">
-        <div className="flex items-center gap-3 bg-white/5 rounded-xl px-4 py-2.5 border border-white/5 focus-within:border-primary/50 transition-colors">
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="3"
-            className="text-muted"
-          >
-            <circle cx="11" cy="11" r="8" />
-            <path d="M21 21l-4.35-4.35" />
+    <div className="flex gap-4 h-full max-h-[70vh] min-h-[350px]">
+      {/* Left Sidebar: Provider tabs */}
+      <div className="flex flex-col gap-2.5 items-center pr-2 border-r border-white/5 shrink-0 select-none overflow-y-auto custom-scrollbar w-14 pt-0.5">
+        <button
+          type="button"
+          onClick={() => setSelectedProvider("all")}
+          className={`w-8 h-8 rounded-full flex items-center justify-center border transition-all flex-shrink-0 cursor-pointer ${
+            selectedProvider === "all"
+              ? "bg-white/10 text-yellow-400 border-yellow-500/30 shadow-md scale-105"
+              : "bg-white/[0.02] text-white/50 border-white/[0.03] hover:bg-white/5 hover:text-white"
+          }`}
+          title="All Providers"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill={selectedProvider === "all" ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2">
+            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
           </svg>
-          <input
-            type="text"
-            placeholder="Search models..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            onClick={(e) => e.stopPropagation()}
-            className="bg-transparent border-none text-xs text-white focus:ring-0 w-full p-0 outline-none"
-          />
+        </button>
+        
+        {availableProviders.map(p => {
+          const style = getProviderStyle(p.id);
+          const isSelected = selectedProvider === p.id;
+          return (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => setSelectedProvider(p.id)}
+              className={`w-8 h-8 flex-shrink-0 rounded-full flex items-center justify-center font-black text-[10px] border transition-all flex-shrink-0 cursor-pointer overflow-hidden ${
+                isSelected
+                  ? `${style.bg} border-white/25 scale-105 shadow-md`
+                  : "bg-white/[0.02] text-white/40 border-white/[0.02] hover:bg-white/5 hover:text-white/80"
+              }`}
+              title={p.name}
+            >
+              {PROVIDER_LOGOS[p.id] ? (
+                <img
+                  src={PROVIDER_LOGOS[p.id]}
+                  alt={p.name}
+                  className={`w-full h-full rounded-full object-contain ${invertLogos.includes(p.id) ? "invert" : ""}`}
+                />
+              ) : (
+                style.text
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Right Pane: Search + Lists */}
+      <div className="flex-1 flex flex-col gap-2 min-w-0">
+        <div className="px-1 pb-2 border-b border-white/5 shrink-0">
+          <div className="flex items-center gap-3 bg-white/5 rounded-xl px-4 py-2 border border-white/5 focus-within:border-primary/50 transition-colors">
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="3"
+              className="text-muted"
+            >
+              <circle cx="11" cy="11" r="8" />
+              <path d="M21 21l-4.35-4.35" />
+            </svg>
+            <input
+              type="text"
+              placeholder="Search models..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-transparent border-none text-xs text-white focus:ring-0 w-full p-0 outline-none"
+            />
+          </div>
         </div>
-      </div>
-      <div className="text-xs font-bold text-secondary px-3 py-2 shrink-0">
-        Video models
-      </div>
-      <div className="flex flex-col gap-1.5 overflow-y-auto custom-scrollbar pr-1 pb-2">
-        {filteredMain.map((m) => renderItem(m, false))}
-        {filteredV2V.length > 0 && (
-          <>
-            <div className="text-xs font-bold text-orange-400/70 px-3 py-2 mt-1 border-t border-white/5">
-              Video Tools
+        
+        <div className="text-xs font-bold text-secondary px-2 py-1 shrink-0 flex items-center justify-between">
+          <span>Video models</span>
+          {selectedProvider !== "all" && (
+            <span className="text-[10px] bg-white/5 px-2 py-0.5 rounded text-white/60">
+              {availableProviders.find(p => p.id === selectedProvider)?.name || selectedProvider}
+            </span>
+          )}
+        </div>
+        
+        <div className="flex flex-col gap-1.5 overflow-y-auto custom-scrollbar pr-1 pb-2 flex-1">
+          {filteredMain.length === 0 && filteredV2V.length === 0 ? (
+            <div className="text-xs text-white/30 text-center py-6">
+              No models found
             </div>
-            {filteredV2V.map((m) => renderItem(m, true))}
-          </>
-        )}
+          ) : (
+            <>
+              {filteredMain.map((m) => renderItem(m, false))}
+              {filteredV2V.length > 0 && (
+                <>
+                  <div className="text-xs font-bold text-orange-400/70 px-3 py-2 mt-1 border-t border-white/5">
+                    Video Tools
+                  </div>
+                  {filteredV2V.map((m) => renderItem(m, true))}
+                </>
+              )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
 // ── Control button ────────────────────────────────────────────────────────────
-
-function ControlBtn({ icon, label, onClick, style }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={style}
-      className="flex items-center gap-1.5 md:gap-2.5 px-3 md:px-4 py-2 md:py-2.5 bg-white/5 hover:bg-white/10 rounded-xl md:rounded-2xl transition-all border border-white/5 group whitespace-nowrap"
-    >
-      {icon}
-      <span className="text-xs font-bold text-white group-hover:text-primary transition-colors">
-        {label}
-      </span>
-      <svg
-        width="10"
-        height="10"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="4"
-        className="opacity-20 group-hover:opacity-100 transition-opacity"
-      >
-        <path d="M6 9l6 6 6-6" />
-      </svg>
-    </button>
-  );
-}
 
 // ── Dropdown panel ─────────────────────────────────────────────────────────────
 // Rendered inside a `relative` wrapper div; floats above the anchor button.
@@ -236,12 +407,19 @@ function ControlBtn({ icon, label, onClick, style }) {
 
 export default function VideoStudio({
   apiKey,
+  onGenerationStart,
+  onGenerationEnd,
   onGenerationComplete,
+  onGenerationError,
   historyItems,
   droppedFiles,
   onFilesHandled,
 }) {
-  const PERSIST_KEY = "hg_video_studio_persistent";
+  const LEGACY_PERSIST_KEY = "hg_video_studio_persistent";
+  const PERSIST_KEY = scopedPersistKey(LEGACY_PERSIST_KEY, apiKey);
+  useEffect(() => {
+    migrateLegacyPersistKey(LEGACY_PERSIST_KEY, PERSIST_KEY);
+  }, [PERSIST_KEY]);
 
   // ── mode state ──
   const [imageMode, setImageMode] = useState(false); // i2v
@@ -296,6 +474,7 @@ export default function VideoStudio({
   const [canvasUrl, setCanvasUrl] = useState(null);
   const [canvasModel, setCanvasModel] = useState(null);
   const [showCanvas, setShowCanvas] = useState(false);
+  const [isDrawModalOpen, setIsDrawModalOpen] = useState(false);
   const [lastGenerationId, setLastGenerationId] = useState(null);
   const [lastGenerationModel, setLastGenerationModel] = useState(null);
 
@@ -481,19 +660,6 @@ export default function VideoStudio({
     }
   }, [applyControlsForModel, defaultModel.id]);
 
-  // ── Adjust height on load ────────────────────────────────────────────────
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (textareaRef.current) {
-        const el = textareaRef.current;
-        el.style.height = "auto";
-        const maxH = window.innerWidth < 768 ? 150 : 250;
-        el.style.height = Math.min(el.scrollHeight, maxH) + "px";
-      }
-    }, 150);
-    return () => clearTimeout(timer);
-  }, []);
-
   // ── Persistence: Save ────────────────────────────────────────────────────
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -543,85 +709,134 @@ export default function VideoStudio({
 
   // ── Derived UI values ────────────────────────────────────────────────────
 
-  const processDroppedImage = async (file) => {
-    if (file.size > 10 * 1024 * 1024) {
-      alert("Image exceeds 10MB limit.");
-      return;
-    }
-    setImageUploading(true);
-    setImageProgress(0);
-    try {
-      const url = await uploadFile(apiKey, file, (pct) => {
-        setImageProgress(pct);
-      });
+  const applyImageReferenceUrl = useCallback(
+    (url) => {
+      if (!url) return;
+
       setUploadedImageUrl(url);
+
+      // Motion-control models use the image alongside the uploaded video.
+      if (isMotionControlSelection(selectedModel, v2vMode)) {
+        setUploadedImageUrls([url]);
+        setPromptDisabled(false);
+        return;
+      }
+
+      const currentT2V = t2vModels.find((model) => model.id === selectedModel);
+
+      // Models with native image inputs stay in their current mode.
+      if (currentT2V?.inputs?.images_list) {
+        const maxImages = currentT2V.inputs.images_list.maxItems || 8;
+        setUploadedImageUrls((previousUrls) => {
+          if (previousUrls.includes(url)) return previousUrls;
+          return [...previousUrls, url].slice(0, maxImages);
+        });
+        setPromptDisabled(false);
+        return;
+      }
+
       setUploadedVideoUrl(null);
       setUploadedVideoName(null);
       setV2vMode(false);
 
-      let targetModelId = selectedModel;
+      const sibling = currentT2V?.family
+        ? i2vModels.find((model) => model.family === currentT2V.family)
+        : null;
+      const targetModel = imageMode
+        ? i2vModels.find((model) => model.id === selectedModel)
+        : sibling || i2vModels[0];
+
+      if (!targetModel) return;
+
       if (!imageMode) {
-        const currentT2V = t2vModels.find((m) => m.id === selectedModel);
-        const sibling = currentT2V?.family
-          ? i2vModels.find((m) => m.family === currentT2V.family)
-          : null;
-        const target = sibling || i2vModels[0];
-        targetModelId = target.id;
         setImageMode(true);
-        setSelectedModel(target.id);
-        setSelectedModelName(target.name);
-        applyControlsForModel(target.id, true, false);
+        setSelectedModel(targetModel.id);
+        setSelectedModelName(targetModel.name);
+        applyControlsForModel(targetModel.id, true, false);
       }
 
-      const maxImgs = getMaxImagesForI2VModel(targetModelId);
-      if (maxImgs > 2) {
-        setUploadedImageUrls((prev) => {
-          if (prev.includes(url)) return prev;
-          return [...prev, url].slice(0, maxImgs);
+      const maxImages = getMaxImagesForI2VModel(targetModel.id);
+      if (maxImages > 2) {
+        setUploadedImageUrls((previousUrls) => {
+          if (previousUrls.includes(url)) return previousUrls;
+          return [...previousUrls, url].slice(0, maxImages);
         });
       } else {
         setUploadedImageUrls([url]);
       }
       setPromptDisabled(false);
-    } catch (err) {
-      alert(`Image upload failed: ${err.message}`);
-    } finally {
-      setImageUploading(false);
-      setImageProgress(0);
-    }
-  };
+    },
+    [
+      applyControlsForModel,
+      imageMode,
+      isMotionControlSelection,
+      selectedModel,
+      v2vMode,
+    ],
+  );
 
-  const processDroppedVideo = async (file) => {
-    if (file.size > 50 * 1024 * 1024) {
-      alert("Video exceeds 50MB limit.");
-      return;
-    }
-    setVideoUploading(true);
-    setVideoProgress(0);
-    try {
-      const url = await uploadFile(apiKey, file, (pct) => {
-        setVideoProgress(pct);
-      });
-      setUploadedVideoUrl(url);
-      setUploadedVideoName(file.name);
-      if (imageMode) {
-        setUploadedImageUrl(null);
-        setImageMode(false);
+  const handleDrawReference = useCallback(
+    (entry) => {
+      applyImageReferenceUrl(entry?.url);
+    },
+    [applyImageReferenceUrl],
+  );
+
+  const uploadImageReference = useCallback(
+    async (file) => {
+      if (file.size > 10 * 1024 * 1024) {
+        alert("Image exceeds 10MB limit.");
+        return;
       }
-      setV2vMode(true);
-      const firstV2V = v2vModels[0];
-      setSelectedModel(firstV2V.id);
-      setSelectedModelName(firstV2V.name);
-      applyControlsForModel(firstV2V.id, false, true);
-      setPrompt("");
-      setPromptDisabled(true);
-    } catch (err) {
-      alert(`Video upload failed: ${err.message}`);
-    } finally {
-      setVideoUploading(false);
+
+      setImageUploading(true);
+      setImageProgress(0);
+      try {
+        const url = await uploadFile(apiKey, file, setImageProgress);
+        applyImageReferenceUrl(url);
+      } catch (err) {
+        console.error("[VideoStudio] Image upload failed:", err);
+        alert(`Image upload failed: ${err.message}`);
+      } finally {
+        setImageUploading(false);
+        setImageProgress(0);
+      }
+    },
+    [apiKey, applyImageReferenceUrl],
+  );
+
+  const processDroppedVideo = useCallback(
+    async (file) => {
+      if (file.size > 50 * 1024 * 1024) {
+        alert("Video exceeds 50MB limit.");
+        return;
+      }
+      setVideoUploading(true);
       setVideoProgress(0);
-    }
-  };
+      try {
+        const url = await uploadFile(apiKey, file, setVideoProgress);
+        setUploadedVideoUrl(url);
+        setUploadedVideoName(file.name);
+        if (imageMode) {
+          setUploadedImageUrl(null);
+          setImageMode(false);
+        }
+        setV2vMode(true);
+        const firstV2V = v2vModels[0];
+        setSelectedModel(firstV2V.id);
+        setSelectedModelName(firstV2V.name);
+        applyControlsForModel(firstV2V.id, false, true);
+        setPrompt("");
+        setPromptDisabled(true);
+      } catch (err) {
+        alert(`Video upload failed: ${err.message}`);
+      } finally {
+        setVideoUploading(false);
+        setVideoProgress(0);
+      }
+    },
+    [apiKey, applyControlsForModel, imageMode],
+  );
 
   // ── Handle Dropped Files ────────────────────────────────────────────────
   useEffect(() => {
@@ -632,11 +847,11 @@ export default function VideoStudio({
       if (videoFiles.length > 0) {
         processDroppedVideo(videoFiles[0]);
       } else if (imageFiles.length > 0) {
-        processDroppedImage(imageFiles[0]);
+        uploadImageReference(imageFiles[0]);
       }
       onFilesHandled?.();
     }
-  }, [droppedFiles, onFilesHandled, processDroppedImage, processDroppedVideo]);
+  }, [droppedFiles, onFilesHandled, processDroppedVideo, uploadImageReference]);
 
   // Initialise controls for default model on mount
   useEffect(() => {
@@ -657,73 +872,17 @@ export default function VideoStudio({
     return () => window.removeEventListener("click", handler);
   }, [openDropdown]);
 
-  // ── textarea auto-resize ──────────────────────────────────────────────────
   const handlePromptInput = (e) => {
     setPrompt(e.target.value);
-    const el = e.target;
-    el.style.height = "auto";
-    const maxH = window.innerWidth < 768 ? 150 : 250;
-    el.style.height = Math.min(el.scrollHeight, maxH) + "px";
   };
 
   // ── image upload ─────────────────────────────────────────────────────────
   const handleImageFileChange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    if (file.size > 10 * 1024 * 1024) {
-      alert("Image exceeds 10MB limit.");
-      return;
-    }
-    setImageUploading(true);
-    setImageProgress(0);
-
     try {
-      const url = await uploadFile(apiKey, file, (pct) => {
-        setImageProgress(pct);
-      });
-      setUploadedImageUrl(url);
-
-      // Motion-control v2v: image is a second input, not a mode switch
-      if (isMotionControlSelection(selectedModel, v2vMode)) {
-        setPromptDisabled(false);
-        setUploadedImageUrls([url]);
-      } else {
-        // Clear v2v if active
-        setUploadedVideoUrl(null);
-        setUploadedVideoName(null);
-        setV2vMode(false);
-
-        let targetModelId = selectedModel;
-        if (!imageMode) {
-          const currentT2V = t2vModels.find((m) => m.id === selectedModel);
-          const sibling = currentT2V?.family
-            ? i2vModels.find((m) => m.family === currentT2V.family)
-            : null;
-          const target = sibling || i2vModels[0];
-          targetModelId = target.id;
-          setImageMode(true);
-          setSelectedModel(target.id);
-          setSelectedModelName(target.name);
-          applyControlsForModel(target.id, true, false);
-        }
-
-        const maxImgs = getMaxImagesForI2VModel(targetModelId);
-        if (maxImgs > 2) {
-          setUploadedImageUrls((prev) => {
-            if (prev.includes(url)) return prev;
-            return [...prev, url].slice(0, maxImgs);
-          });
-        } else {
-          setUploadedImageUrls([url]);
-        }
-        setPromptDisabled(false);
-      }
-    } catch (err) {
-      console.error("[VideoStudio] Image upload failed:", err);
-      alert(`Image upload failed: ${err.message}`);
+      await uploadImageReference(file);
     } finally {
-      setImageUploading(false);
-      setImageProgress(0);
       if (imageFileInputRef.current) imageFileInputRef.current.value = "";
     }
   };
@@ -732,8 +891,10 @@ export default function VideoStudio({
     setUploadedImageUrl(null);
     setUploadedImageUrls([]);
     setUploadedEndImageUrl(null);
-    // Motion-control v2v: keep model and video; just drop the image
+    // Motion-control v2v or model with inputs.images_list: keep model, just drop the image
     if (isMotionControlSelection(selectedModel, v2vMode)) return;
+    const currentT2V = t2vModels.find((m) => m.id === selectedModel);
+    if (currentT2V?.inputs?.images_list) return;
     setImageMode(false);
     const first = t2vModels[0];
     setSelectedModel(first.id);
@@ -807,18 +968,25 @@ export default function VideoStudio({
         // Already in motion-control mode — keep model and image, allow prompt
         setPromptDisabled(false);
       } else {
-        // Default v2v flow (e.g. watermark remover) — auto-pick the first v2v model
-        if (imageMode) {
-          setUploadedImageUrl(null);
-          setImageMode(false);
+        // Model-native video reference (e.g. Seedance 2.0 Extend with inputs.video_files):
+        // keep the current model & mode; just store the video URL as a reference
+        const currentT2VOrExtend = t2vModels.find((m) => m.id === selectedModel);
+        if (currentT2VOrExtend?.inputs?.video_files) {
+          setPromptDisabled(false);
+        } else {
+          // Default v2v flow (e.g. watermark remover) — auto-pick the first v2v model
+          if (imageMode) {
+            setUploadedImageUrl(null);
+            setImageMode(false);
+          }
+          setV2vMode(true);
+          const firstV2V = v2vModels[0];
+          setSelectedModel(firstV2V.id);
+          setSelectedModelName(firstV2V.name);
+          applyControlsForModel(firstV2V.id, false, true);
+          setPrompt("");
+          setPromptDisabled(true);
         }
-        setV2vMode(true);
-        const firstV2V = v2vModels[0];
-        setSelectedModel(firstV2V.id);
-        setSelectedModelName(firstV2V.name);
-        applyControlsForModel(firstV2V.id, false, true);
-        setPrompt("");
-        setPromptDisabled(true);
       }
     } catch (err) {
       console.error("[VideoStudio] Video upload failed:", err);
@@ -936,6 +1104,7 @@ export default function VideoStudio({
       }
     }
 
+    onGenerationStart?.();
     setGenerating(true);
     setGenerateError(null);
 
@@ -1037,6 +1206,14 @@ export default function VideoStudio({
 
         if (isExtendMode) {
           params.request_id = lastGenerationId;
+          // Optional reference media for Seedance 2.0 Extend:
+          // images map to @image2…@image9 and videos map to @video1…@video3 in the prompt
+          if (uploadedImageUrls.length > 0) {
+            params.images_list = uploadedImageUrls;
+          }
+          if (uploadedVideoUrl) {
+            params.videos_list = [uploadedVideoUrl];
+          }
         } else {
           params.aspect_ratio = selectedAr;
         }
@@ -1084,10 +1261,12 @@ export default function VideoStudio({
     } catch (e) {
       hadError = true;
       console.error("[VideoStudio]", e);
-      setGenerateError(e.message?.slice(0, 80) || "Generation failed");
-      setTimeout(() => setGenerateError(null), 4000);
+      const errMsg = formatErrorMessage(e, "Video generation failed");
+      if (onGenerationError) onGenerationError(errMsg);
+      else toast.error(errMsg);
     } finally {
       setGenerating(false);
+      onGenerationEnd?.();
     }
   }, [
     apiKey,
@@ -1110,6 +1289,9 @@ export default function VideoStudio({
     addToLocalHistory,
     showVideoInCanvas,
     onGenerationComplete,
+    onGenerationEnd,
+    onGenerationError,
+    onGenerationStart,
   ]);
 
   // ── reset to prompt bar ───────────────────────────────────────────────────
@@ -1153,6 +1335,9 @@ export default function VideoStudio({
     canvasModel === "seedance-v2.0-t2v" || canvasModel === "seedance-v2.0-i2v";
   const currentModelObj = getCurrentModel();
   const isExtendMode = currentModelObj?.requiresRequestId;
+  const canUploadImageReference =
+    (!v2vMode || isMotionControlSelection(selectedModel, v2vMode)) &&
+    (!isExtendMode || currentModelObj?.inputs?.images_list);
 
   const promptPlaceholder = v2vMode
     ? currentModelObj?.imageField
@@ -1186,12 +1371,12 @@ export default function VideoStudio({
               return (
                 <div
                   key={entry.id || idx}
-                  className="relative group rounded-lg overflow-hidden border border-white/10 bg-[#0a0a0a] shadow-xl hover:border-primary/50 transition-all duration-300 flex flex-col"
+                  className="relative group rounded-lg overflow-hidden border border-white/10 bg-[#0a0a0a] shadow-xl hover:border-primary/50 transition-all duration-300 flex flex-col cursor-pointer"
+                  onClick={() => setFullscreenUrl(entry.url)}
                 >
                   <video
                     src={entry.url}
-                    className="w-full aspect-video object-cover bg-black/40 cursor-pointer hover:opacity-80 transition-opacity"
-                    onClick={() => setFullscreenUrl(entry.url)}
+                    className="w-full aspect-video object-cover bg-black/40 hover:opacity-80 transition-opacity"
                     controls={false}
                     loop
                     muted
@@ -1204,23 +1389,11 @@ export default function VideoStudio({
                   />
                   
                   {/* Overlay actions */}
-                  <div className="absolute top-2 right-2 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
-                      type="button"
-                      title="Fullscreen"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setFullscreenUrl(entry.url);
-                      }}
-                      className="p-2 bg-black/60 backdrop-blur-md rounded-full text-white hover:bg-primary hover:text-black transition-all border border-white/10"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                        <polyline points="15 3 21 3 21 9" />
-                        <polyline points="9 21 3 21 3 15" />
-                        <line x1="21" y1="3" x2="14" y2="10" />
-                        <line x1="3" y1="21" x2="10" y2="14" />
-                      </svg>
-                    </button>
+                  <div className="absolute top-2 right-2 hidden md:flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <GenerationCopyButtons
+                      prompt={entry.prompt}
+                      onCopyError={onGenerationError}
+                    />
                     <button
                       type="button"
                       title="Download"
@@ -1250,7 +1423,55 @@ export default function VideoStudio({
                         </svg>
                       </button>
                     )}
+                    <button
+                      type="button"
+                      title="Delete"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (confirm("Are you sure you want to delete this generated item?")) {
+                          setLocalHistory(prev => prev.filter((_, i) => i !== idx));
+                        }
+                      }}
+                      className="p-2 bg-black/60 backdrop-blur-md rounded-full text-red-400 hover:bg-red-500 hover:text-white transition-all border border-white/10"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <polyline points="3 6 5 6 21 6" />
+                        <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+                        <line x1="10" y1="11" x2="10" y2="17" />
+                        <line x1="14" y1="11" x2="14" y2="17" />
+                      </svg>
+                    </button>
                   </div>
+                  <MobileGenerationActions
+                    prompt={entry.prompt}
+                    onCopyError={onGenerationError}
+                    actions={[
+                      {
+                        kind: "download",
+                        label: "Download",
+                        onSelect: () =>
+                          downloadFile(entry.url, `video-${entry.id || idx}.mp4`),
+                      },
+                      isSeedance2 && {
+                        kind: "extend",
+                        label: "Extend",
+                        onSelect: () => {
+                          setLastGenerationId(entry.id);
+                          handleExtend();
+                        },
+                      },
+                      {
+                        kind: "delete",
+                        label: "Delete",
+                        danger: true,
+                        onSelect: () => {
+                          if (confirm("Are you sure you want to delete this generated item?")) {
+                            setLocalHistory((prev) => prev.filter((_, i) => i !== idx));
+                          }
+                        },
+                      },
+                    ]}
+                  />
 
                   {/* Prompt & Details */}
                   <div className="p-3 bg-black/80 backdrop-blur-sm border-t border-white/5 flex-1 flex flex-col justify-between gap-2">
@@ -1258,16 +1479,18 @@ export default function VideoStudio({
                       {entry.prompt || "No prompt provided"}
                     </p>
                     <div className="flex items-center justify-between mt-1 flex-wrap gap-1">
-                      <span className="text-[10px] font-bold text-primary px-2 py-0.5 bg-primary/10 rounded border border-primary/20 whitespace-nowrap">
-                        {entry.model?.replace("-", " ")}
-                      </span>
-                      <div className="flex gap-2">
-                        {entry.resolution && (
-                          <span className="text-[10px] text-white/40">{entry.resolution}</span>
-                        )}
-                        {entry.duration && (
-                          <span className="text-[10px] text-white/40">{entry.duration}s</span>
-                        )}
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-bold text-primary px-2 py-0.5 bg-primary/10 rounded border border-primary/20 whitespace-nowrap capitalize">
+                          {entry.model?.replace("-", " ") || "Video Studio"}
+                        </span>
+                        <div className="flex gap-2">
+                          {entry.resolution && (
+                            <span className="text-[10px] text-white/40">{entry.resolution}</span>
+                          )}
+                          {entry.duration && (
+                            <span className="text-[10px] text-white/40">{entry.duration}s</span>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1277,23 +1500,45 @@ export default function VideoStudio({
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center h-full animate-fade-in-up transition-all duration-700 min-h-[50vh]">
-            <div className="mb-12 relative group">
-              <div className="absolute inset-0 bg-primary/10 blur-[120px] rounded-full opacity-30 group-hover:opacity-60 transition-opacity duration-1000" />
-              <div className="relative w-24 h-24 md:w-32 md:h-32 bg-white/[0.02] rounded-[2rem] flex items-center justify-center border border-white/[0.05] overflow-hidden backdrop-blur-sm">
-                <div className="w-16 h-16 bg-primary/5 rounded-2xl flex items-center justify-center border border-primary/10 relative z-10 transition-transform duration-500 group-hover:scale-110">
-                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-primary opacity-80">
-                    <polygon points="23 7 16 12 23 17 23 7" />
-                    <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-                  </svg>
-                </div>
-                <div className="absolute top-4 right-4 text-[10px] text-primary/40 animate-pulse">✨</div>
+            {/* Overlapping floating cards */}
+            <div className="flex items-center justify-center gap-1.5 md:gap-3 mb-10 select-none scale-90 sm:scale-100">
+              <div className="w-18 h-22 sm:w-24 sm:h-28 rounded-2xl border border-white/10 shadow-2xl -rotate-[12deg] transform hover:rotate-0 hover:scale-110 hover:z-20 transition-all duration-300 overflow-hidden bg-white/[0.01] flex-shrink-0">
+                <img
+                  src="https://d3adwkbyhxyrtq.cloudfront.net/webassets/videomodels/sdxl-image.avif"
+                  alt="Creative asset 1"
+                  className="w-full h-full object-cover"
+                />
+              </div>
+              <div className="w-18 h-22 sm:w-24 sm:h-28 rounded-2xl border border-white/10 shadow-2xl -rotate-[4deg] transform hover:rotate-0 hover:scale-110 hover:z-20 transition-all duration-300 overflow-hidden bg-white/[0.01] -ml-3 sm:-ml-4 flex-shrink-0">
+                <img
+                  src="https://d3adwkbyhxyrtq.cloudfront.net/webassets/videomodels/chroma-image.avif"
+                  alt="Creative asset 2"
+                  className="w-full h-full object-cover"
+                />
+              </div>
+              <div className="w-18 h-18 sm:w-24 sm:h-24 rounded-full border border-white/10 shadow-2xl rotate-[6deg] transform hover:rotate-0 hover:scale-110 hover:z-20 transition-all duration-300 overflow-hidden bg-white/[0.01] -ml-3 sm:-ml-4 flex-shrink-0">
+                <img
+                  src="https://d3adwkbyhxyrtq.cloudfront.net/webassets/videomodels/neta-lumina.avif"
+                  alt="Creative asset 3"
+                  className="w-full h-full object-cover"
+                />
+              </div>
+              <div className="w-18 h-22 sm:w-24 sm:h-28 rounded-2xl border border-white/10 shadow-2xl rotate-[12deg] transform hover:rotate-0 hover:scale-110 hover:z-20 transition-all duration-300 overflow-hidden bg-white/[0.01] -ml-3 sm:-ml-4 flex-shrink-0">
+                <img
+                  src="https://d3adwkbyhxyrtq.cloudfront.net/webassets/videomodels/perfect-pony-xl.avif"
+                  alt="Creative asset 4"
+                  className="w-full h-full object-cover"
+                />
               </div>
             </div>
-            <h1 className="text-3xl sm:text-5xl md:text-6xl font-extrabold text-white tracking-tight mb-4 text-center px-4">
-              <span className="text-white/40 font-medium">START CREATING WITH</span><br />
-              <span className="text-white">VIDEO STUDIO</span>
+
+            <h1 className="text-2xl sm:text-4xl md:text-5xl font-extrabold tracking-tight mb-4 text-center px-4 flex flex-col items-center">
+              <span className="text-white font-black uppercase text-xl sm:text-3xl tracking-wide mb-1 opacity-90">START CREATING WITH</span>
+              <span className="text-[#22d3ee] font-black uppercase text-2xl sm:text-4xl sm:mt-1 tracking-tight">
+                {selectedModelName}
+              </span>
             </h1>
-            <p className="text-white/40 text-sm md:text-base font-medium tracking-wide text-center max-w-lg leading-relaxed">
+            <p className="text-white/40 text-xs sm:text-sm font-medium tracking-wide text-center max-w-lg leading-relaxed px-4">
               Animate images into stunning AI videos with motion effects
             </p>
           </div>
@@ -1301,292 +1546,280 @@ export default function VideoStudio({
       </div>
 
       {/* ── BOTTOM PROMPT BAR ── */}
-      <div className="absolute bottom-4 w-full max-w-[95%] lg:max-w-4xl z-40 animate-fade-in-up" style={{ animationDelay: "0.2s" }}>
-        <div className="w-full bg-[#0a0a0a]/80 backdrop-blur-3xl rounded-md border border-white/10 p-4 flex flex-col gap-2 shadow-2xl">
-          <div className="flex items-center gap-2 px-1">
-            {/* Image upload button / thumbnails */}
-            {imageMode && getMaxImagesForI2VModel(selectedModel) > 2 ? (
-              <div className="flex items-center gap-2 flex-wrap">
-                {uploadedImageUrls.map((url, idx) => (
-                  <div key={idx} className="relative w-10 h-10 shrink-0 rounded-full border border-primary/60 bg-primary/5 overflow-hidden group">
-                    <img src={url} alt="" className="w-full h-full object-cover" />
-                    <button
-                      type="button"
-                      onClick={() => removeImageAtIndex(idx)}
-                      className="absolute inset-0 bg-black/75 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-xs font-black transition-opacity"
-                      title="Remove image"
-                    >
-                      ✕
-                    </button>
-                    <span className="absolute bottom-0.5 right-0.5 px-1 h-3.5 bg-black/60 rounded-full text-[8px] font-black text-primary leading-none flex items-center justify-center pointer-events-none">
-                      {idx + 1}
-                    </span>
-                  </div>
-                ))}
-                {uploadedImageUrls.length < getMaxImagesForI2VModel(selectedModel) && (
-                  <div className="relative">
-                    <input
-                      ref={imageFileInputRef}
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={handleImageFileChange}
-                    />
-                    <button
-                      type="button"
-                      title="Upload reference image"
-                      onClick={() => imageFileInputRef.current?.click()}
-                      className="w-10 h-10 shrink-0 rounded-full border transition-all flex items-center justify-center bg-white/5 border-white/[0.03] hover:bg-white/10 hover:border-primary/40 relative overflow-hidden group"
-                    >
-                      {imageUploading ? (
-                        <div className="flex flex-col items-center justify-center w-full h-full absolute inset-0 bg-black/80 z-20 backdrop-blur-[2px]">
-                          <svg className="w-8 h-8 -rotate-90">
-                            <circle cx="16" cy="16" r="14" stroke="currentColor" strokeWidth="2" fill="transparent" className="text-white/10" />
-                            <circle
-                              cx="16"
-                              cy="16"
-                              r="14"
-                              stroke="currentColor"
-                              strokeWidth="2"
-                              fill="transparent"
-                              strokeDasharray={88}
-                              strokeDashoffset={88 - (88 * imageProgress) / 100}
-                              className="text-primary transition-all duration-300"
-                            />
-                          </svg>
-                          <span className="absolute text-[9px] font-black text-primary leading-none">{imageProgress}%</span>
-                        </div>
-                      ) : (
-                        <span className="text-lg font-bold text-white/40 group-hover:text-primary transition-colors">+</span>
-                      )}
-                    </button>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="relative">
-                <input
-                  ref={imageFileInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={handleImageFileChange}
-                />
-                <button
-                  type="button"
-                  title={
-                    uploadedImageUrl
-                      ? "Clear image"
-                      : "Upload image for Image-to-Video"
-                  }
-                  onClick={() =>
-                    uploadedImageUrl
-                      ? clearImageUpload()
-                      : imageFileInputRef.current?.click()
-                  }
-                  className={`w-10 h-10 shrink-0 rounded-full border transition-all flex items-center justify-center relative overflow-hidden ${uploadedImageUrl ? "border-primary/60 bg-primary/5" : "bg-white/5 border-white/[0.03] hover:bg-white/10 hover:border-primary/40"} group`}
-                >
-                  {imageUploading ? (
-                    <div className="flex flex-col items-center justify-center w-full h-full absolute inset-0 bg-black/80 z-20 backdrop-blur-[2px]">
-                      <svg className="w-8 h-8 -rotate-90">
-                        <circle
-                          cx="16"
-                          cy="16"
-                          r="14"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          fill="transparent"
-                          className="text-white/10"
-                        />
-                        <circle
-                          cx="16"
-                          cy="16"
-                          r="14"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          fill="transparent"
-                          strokeDasharray={88}
-                          strokeDashoffset={88 - (88 * imageProgress) / 100}
-                          className="text-primary transition-all duration-300"
-                        />
-                      </svg>
-                      <span className="absolute text-[9px] font-black text-primary leading-none">
-                        {imageProgress}%
+      <PromptComposer>
+          <div className="flex flex-col gap-3">
+            {/* Inline list of uploaded media files */}
+            <div className="flex items-center gap-2.5 flex-wrap">
+              {/* Main image preview */}
+              {uploadedImageUrl && (
+                <div className={PROMPT_MEDIA_PREVIEW_CLASS}>
+                  <img src={uploadedImageUrl} alt="" className="w-full h-full object-cover" />
+                  <button
+                    type="button"
+                    onClick={clearImageUpload}
+                    className="absolute top-0.5 right-0.5 w-4 h-4 bg-black/60 hover:bg-black rounded-full flex items-center justify-center text-white/85 hover:text-white text-[8px] border border-white/5"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+
+              {/* End frame image preview */}
+              {uploadedEndImageUrl && (
+                <div className={PROMPT_MEDIA_PREVIEW_CLASS}>
+                  <img src={uploadedEndImageUrl} alt="" className="w-full h-full object-cover" />
+                  <button
+                    type="button"
+                    onClick={clearEndImage}
+                    className="absolute top-0.5 right-0.5 w-4 h-4 bg-black/60 hover:bg-black rounded-full flex items-center justify-center text-white/85 hover:text-white text-[8px] border border-white/5"
+                  >
+                    ×
+                  </button>
+                  <span className="absolute bottom-0.5 left-0.5 px-1 h-3.5 bg-black/60 rounded-md text-[7px] font-black text-[#22d3ee] leading-none flex items-center justify-center pointer-events-none">
+                    END
+                  </span>
+                </div>
+              )}
+
+              {/* Video preview */}
+              {uploadedVideoUrl && (
+                <div className={PROMPT_MEDIA_PREVIEW_CLASS}>
+                  <video src={uploadedVideoUrl} className="w-full h-full object-cover" muted />
+                  <button
+                    type="button"
+                    onClick={clearVideoUpload}
+                    className="absolute top-0.5 right-0.5 w-4 h-4 bg-black/60 hover:bg-black rounded-full flex items-center justify-center text-white/85 hover:text-white text-[8px] border border-white/5"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+
+              {/* Multiple images layout if supported */}
+              {imageMode && getMaxImagesForI2VModel(selectedModel) > 2 && (
+                <>
+                  {uploadedImageUrls.map((url, idx) => (
+                    <div key={url} className={PROMPT_MEDIA_PREVIEW_CLASS}>
+                      <img src={url} alt="" className="w-full h-full object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => removeImageAtIndex(idx)}
+                        className="absolute top-0.5 right-0.5 w-4 h-4 bg-black/60 hover:bg-black rounded-full flex items-center justify-center text-white/85 hover:text-white text-[8px] border border-white/5"
+                      >
+                        ×
+                      </button>
+                      <span className="absolute bottom-0.5 right-0.5 px-1 h-3.5 bg-black/60 rounded-full text-[8px] font-black text-[#22d3ee] leading-none flex items-center justify-center pointer-events-none">
+                        {idx + 1}
                       </span>
                     </div>
-                  ) : null}
+                  ))}
+                </>
+              )}
 
-                  {uploadedImageUrl ? (
-                    <img
-                      src={uploadedImageUrl}
-                      alt=""
-                      className={`w-full h-full object-cover rounded-full ${imageUploading ? "opacity-40 blur-[2px]" : "opacity-100"}`}
-                    />
-                  ) : (
-                    !imageUploading && (
+              {/* Upload trigger buttons */}
+              {/* Image upload button — shown when the model accepts image input:
+                  • T2V mode: uploading an image auto-switches to the sibling I2V model
+                  • I2V mode: uploading the start-frame (multi-image logic applies)
+                  • V2V motion-control: reference image is required alongside the video
+                  • T2V with inputs.images_list: optional reference images (e.g. Seedance 2.0 Extend)
+                  • Hidden in regular V2V mode (watermark remover etc. needs no image)
+                  • Hidden for extend-type models without inputs.images_list */}
+              {canUploadImageReference && (
+                getMaxImagesForI2VModel(selectedModel) > 2 ? (
+                  uploadedImageUrls.length < getMaxImagesForI2VModel(selectedModel) && (
+                    <div className="relative">
+                      <input
+                        ref={imageFileInputRef}
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={handleImageFileChange}
+                      />
+                      <button
+                        type="button"
+                        title="Upload reference image"
+                        onClick={() => imageFileInputRef.current?.click()}
+                        className={promptMediaButtonClassName()}
+                      >
+                        {imageUploading ? (
+                          <div className="flex flex-col items-center justify-center w-full h-full absolute inset-0 bg-black/80 z-20 backdrop-blur-[2px]">
+                            <svg className="w-8 h-8 -rotate-90">
+                              <circle cx="16" cy="16" r="14" stroke="currentColor" strokeWidth="2" fill="transparent" className="text-white/10" />
+                              <circle
+                                cx="16"
+                                cy="16"
+                                r="14"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                fill="transparent"
+                                strokeDasharray={88}
+                                strokeDashoffset={88 - (88 * imageProgress) / 100}
+                                className="text-[#22d3ee] transition-all duration-300"
+                              />
+                            </svg>
+                            <span className="absolute text-[9px] font-black text-[#22d3ee] leading-none">{imageProgress}%</span>
+                          </div>
+                        ) : (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-white/40 group-hover:text-[#22d3ee] transition-colors">
+                            <line x1="12" y1="5" x2="12" y2="19" />
+                            <line x1="5" y1="12" x2="19" y2="12" />
+                          </svg>
+                        )}
+                      </button>
+                    </div>
+                  )
+                ) : (
+                  !uploadedImageUrl && (
+                    <div className="relative">
+                      <input
+                        ref={imageFileInputRef}
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={handleImageFileChange}
+                      />
+                      <button
+                        type="button"
+                        title="Upload reference image"
+                        onClick={() => imageFileInputRef.current?.click()}
+                        className={promptMediaButtonClassName()}
+                      >
+                        {imageUploading ? (
+                          <div className="flex flex-col items-center justify-center w-full h-full absolute inset-0 bg-black/80 z-20 backdrop-blur-[2px]">
+                            <svg className="w-8 h-8 -rotate-90">
+                              <circle cx="16" cy="16" r="14" stroke="currentColor" strokeWidth="2" fill="transparent" className="text-white/10" />
+                              <circle
+                                cx="16"
+                                cy="16"
+                                r="14"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                fill="transparent"
+                                strokeDasharray={88}
+                                strokeDashoffset={88 - (88 * imageProgress) / 100}
+                                className="text-[#22d3ee] transition-all duration-300"
+                              />
+                            </svg>
+                            <span className="absolute text-[9px] font-black text-[#22d3ee] leading-none">{imageProgress}%</span>
+                          </div>
+                        ) : (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-white/40 group-hover:text-[#22d3ee] transition-colors">
+                            <line x1="12" y1="5" x2="12" y2="19" />
+                            <line x1="5" y1="12" x2="19" y2="12" />
+                          </svg>
+                        )}
+                      </button>
+                    </div>
+                  )
+                )
+              )}
+
+              {/* End frame image button */}
+              {imageMode && i2vModels.find((m) => m.id === selectedModel)?.lastImageField && !uploadedEndImageUrl && (
+                <div className="relative">
+                  <input
+                    ref={endImageFileInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleEndImageFileChange}
+                  />
+                  <button
+                    type="button"
+                    title="Upload end frame (optional)"
+                    onClick={() => endImageFileInputRef.current?.click()}
+                    className={promptMediaButtonClassName()}
+                  >
+                    {endImageUploading ? (
+                      <div className="flex flex-col items-center justify-center w-full h-full absolute inset-0 bg-black/80 z-20 backdrop-blur-[2px]">
+                        <svg className="w-8 h-8 -rotate-90">
+                          <circle cx="16" cy="16" r="14" stroke="currentColor" strokeWidth="2" fill="transparent" className="text-white/10" />
+                          <circle
+                            cx="16"
+                            cy="16"
+                            r="14"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            fill="transparent"
+                            strokeDasharray={88}
+                            strokeDashoffset={88 - (88 * endImageProgress) / 100}
+                            className="text-[#22d3ee] transition-all duration-300"
+                          />
+                        </svg>
+                        <span className="absolute text-[9px] font-black text-[#22d3ee] leading-none">{endImageProgress}%</span>
+                      </div>
+                    ) : (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-white/40 group-hover:text-[#22d3ee] transition-colors">
+                        <line x1="12" y1="5" x2="12" y2="19" />
+                        <line x1="5" y1="12" x2="19" y2="12" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              )}
+
+              {/* Video upload button — shown when a V2V model is active, OR when
+                  the current model has inputs.video_files (e.g. Seedance 2.0 Extend). */}
+              {!uploadedVideoUrl && (v2vMode || currentModelObj?.inputs?.video_files) && (
+                <div className="relative">
+                  <input
+                    ref={videoFileInputRef}
+                    type="file"
+                    accept="video/*"
+                    className="hidden"
+                    onChange={handleVideoFileChange}
+                  />
+                  <button
+                    type="button"
+                    title="Upload video to remove watermark"
+                    onClick={() => videoFileInputRef.current?.click()}
+                    className={promptMediaButtonClassName()}
+                  >
+                    {videoUploading ? (
+                      <div className="flex flex-col items-center justify-center w-full h-full absolute inset-0 bg-black/80 z-20 backdrop-blur-[2px]">
+                        <svg className="w-8 h-8 -rotate-90">
+                          <circle cx="16" cy="16" r="14" stroke="currentColor" strokeWidth="2" fill="transparent" className="text-white/10" />
+                          <circle
+                            cx="16"
+                            cy="16"
+                            r="14"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            fill="transparent"
+                            strokeDasharray={88}
+                            strokeDashoffset={88 - (88 * videoProgress) / 100}
+                            className="text-[#22d3ee] transition-all duration-300"
+                          />
+                        </svg>
+                        <span className="absolute text-[9px] font-black text-[#22d3ee] leading-none">{videoProgress}%</span>
+                      </div>
+                    ) : (
                       <svg
-                        width="18"
-                        height="18"
+                        width="16"
+                        height="16"
                         viewBox="0 0 24 24"
                         fill="none"
                         stroke="currentColor"
-                        strokeWidth="2"
-                        className="text-white/40 group-hover:text-primary transition-colors"
+                        strokeWidth="2.5"
+                        className="text-white/40 group-hover:text-[#22d3ee] transition-colors"
                       >
-                        <rect
-                          x="3"
-                          y="3"
-                          width="18"
-                          height="18"
-                          rx="2"
-                          ry="2"
-                        />
-                        <circle cx="8.5" cy="8.5" r="1.5" />
-                        <polyline points="21 15 16 10 5 21" />
+                        <polygon points="23 7 16 12 23 17 23 7" fill="currentColor" />
+                        <rect x="1" y="5" width="15" height="14" rx="2" ry="2" fill="currentColor" />
                       </svg>
-                    )
-                  )}
-                </button>
-              </div>
-            )}
-
-            {/* End-frame upload button (FLF i2v models only) */}
-            {imageMode && i2vModels.find((m) => m.id === selectedModel)?.lastImageField && (
-              <div className="relative">
-                <input
-                  ref={endImageFileInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={handleEndImageFileChange}
-                />
-                <button
-                  type="button"
-                  title={uploadedEndImageUrl ? "Clear end frame" : "Upload end frame (optional)"}
-                  onClick={() =>
-                    uploadedEndImageUrl
-                      ? clearEndImage()
-                      : endImageFileInputRef.current?.click()
-                  }
-                  className={`w-10 h-10 shrink-0 rounded-full border transition-all flex items-center justify-center relative overflow-hidden ${uploadedEndImageUrl ? "border-primary/60 bg-primary/5" : "bg-white/5 border-white/[0.03] hover:bg-white/10 hover:border-primary/40"} group`}
-                >
-                  {endImageUploading ? (
-                    <div className="flex flex-col items-center justify-center w-full h-full absolute inset-0 bg-black/80 z-20 backdrop-blur-[2px]">
-                      <svg className="w-8 h-8 -rotate-90">
-                        <circle cx="16" cy="16" r="14" stroke="currentColor" strokeWidth="2" fill="transparent" className="text-white/10" />
-                        <circle
-                          cx="16"
-                          cy="16"
-                          r="14"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          fill="transparent"
-                          strokeDasharray={88}
-                          strokeDashoffset={88 - (88 * endImageProgress) / 100}
-                          className="text-primary transition-all duration-300"
-                        />
-                      </svg>
-                      <span className="absolute text-[9px] font-black text-primary leading-none">
-                        {endImageProgress}%
-                      </span>
-                    </div>
-                  ) : null}
-
-                  {uploadedEndImageUrl ? (
-                    <img
-                      src={uploadedEndImageUrl}
-                      alt=""
-                      className={`w-full h-full object-cover rounded-full ${endImageUploading ? "opacity-40 blur-[2px]" : "opacity-100"}`}
-                    />
-                  ) : (
-                    !endImageUploading && (
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-white/40 group-hover:text-primary transition-colors">
-                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                        <circle cx="8.5" cy="8.5" r="1.5" />
-                        <polyline points="21 15 16 10 5 21" />
-                      </svg>
-                    )
-                  )}
-                  <span className="absolute top-0.5 left-0.5 px-1 h-3.5 bg-black/60 rounded-md text-[7px] font-black text-primary leading-none flex items-center justify-center pointer-events-none">
-                    END
-                  </span>
-                </button>
-              </div>
-            )}
-
-            {/* Video upload button */}
-            <div className="relative">
-              <input
-                ref={videoFileInputRef}
-                type="file"
-                accept="video/*"
-                className="hidden"
-                onChange={handleVideoFileChange}
-              />
-              <button
-                type="button"
-                title={
-                  uploadedVideoUrl
-                    ? `${uploadedVideoName} — click to clear`
-                    : "Upload video to remove watermark"
-                }
-                onClick={() =>
-                  uploadedVideoUrl
-                    ? clearVideoUpload()
-                    : videoFileInputRef.current?.click()
-                }
-                className={`w-10 h-10 shrink-0 rounded-full border transition-all flex items-center justify-center relative overflow-hidden ${uploadedVideoUrl ? "border-primary/60 bg-white/5" : "bg-white/[0.03] border-white/[0.03] hover:bg-white/10 hover:border-primary/40"} group`}
-              >
-                {videoUploading ? (
-                  <div className="flex flex-col items-center justify-center w-full h-full absolute inset-0 bg-black/80 z-20 backdrop-blur-[2px]">
-                    <svg className="w-8 h-8 -rotate-90">
-                      <circle
-                        cx="16"
-                        cy="16"
-                        r="14"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        fill="transparent"
-                        className="text-white/10"
-                      />
-                      <circle
-                        cx="16"
-                        cy="16"
-                        r="14"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        fill="transparent"
-                        strokeDasharray={88}
-                        strokeDashoffset={88 - (88 * videoProgress) / 100}
-                        className="text-primary transition-all duration-300"
-                      />
-                    </svg>
-                    <span className="absolute text-[9px] font-black text-primary leading-none">
-                      {videoProgress}%
-                    </span>
-                  </div>
-                ) : uploadedVideoUrl ? (
-                  <video
-                    src={uploadedVideoUrl}
-                    className={`w-full h-full object-cover rounded-full ${videoUploading ? "opacity-40 blur-[2px]" : "opacity-100"}`}
-                    muted
-                  />
-                ) : (
-                  <VideoIconSvg className="text-white/40 group-hover:text-primary transition-colors" />
-                )}
-              </button>
+                    )}
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Prompt textarea */}
             <div className="flex-1 flex flex-col gap-1">
-              <textarea
+              <PromptTextarea
                 ref={textareaRef}
                 value={prompt}
                 onChange={handlePromptInput}
                 placeholder={promptPlaceholder}
                 disabled={promptDisabled}
-                rows={1}
-                className="w-full bg-transparent border-none text-white text-sm placeholder:text-white/10 focus:outline-none resize-none pt-1 leading-relaxed min-h-[40px] max-h-[150px] md:max-h-[250px] overflow-y-auto custom-scrollbar disabled:opacity-40"
               />
             </div>
           </div>
@@ -1609,48 +1842,51 @@ export default function VideoStudio({
           )}
 
           {/* Bottom row: controls + generate */}
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 pt-2 border-t border-white/[0.03] relative">
-            <div className="flex items-center gap-2 relative flex-wrap pb-1 md:pb-0">
+          <PromptFooter>
+            <PromptControls ref={dropdownRef}>
               {/* Model btn */}
               <div className="relative">
                 <button
                   type="button"
                   onClick={toggleDropdown("model")}
-                  className="flex items-center gap-2 px-3 py-2 bg-white/[0.03] hover:bg-white/[0.06] rounded-md transition-all border border-white/[0.03] group whitespace-nowrap"
+                  className={promptControlClassName({
+                    active: openDropdown === "model",
+                  })}
                 >
-                  <div className="w-4 h-4 bg-[#22d3ee] rounded flex items-center justify-center shadow-lg shadow-[#22d3ee]/10">
-                    <span className="text-[9px] font-bold text-black uppercase">
-                      V
-                    </span>
+                  <div className="w-4 h-4 rounded overflow-hidden shrink-0 flex items-center justify-center bg-white/5">
+                    {(() => {
+                      const allCurrentModels = [...t2vModels, ...i2vModels, ...v2vModels];
+                      const selectedModelObj = allCurrentModels.find(m => m.id === selectedModel);
+                      const selectedModelProvider = selectedModelObj?.provider || 'muapi';
+                      return PROVIDER_LOGOS[selectedModelProvider] ? (
+                        <img 
+                          src={PROVIDER_LOGOS[selectedModelProvider]} 
+                          alt="" 
+                          className={`w-full h-full object-contain ${invertLogos.includes(selectedModelProvider) ? "invert" : ""}`} 
+                        />
+                      ) : (
+                        <span className="text-[9px] font-bold text-black uppercase">V</span>
+                      );
+                    })()}
                   </div>
-                  <span className="text-xs font-semibold text-white/70 group-hover:text-[#22d3ee] transition-colors">
+                <span className={PROMPT_CONTROL_LABEL_CLASS}>
                     {selectedModelName}
                   </span>
-                  <svg
-                    width="8"
-                    height="8"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="4"
-                    className="opacity-20 group-hover:opacity-100 transition-opacity"
-                  >
-                    <path d="M6 9l6 6 6-6" />
-                  </svg>
+                  <PromptChevronIcon />
                 </button>
                 {openDropdown === "model" && (
-                  <div
-                    ref={dropdownRef}
+                  <PromptPopover
                     onClick={(e) => e.stopPropagation()}
-                    className="absolute bottom-[calc(100%+12px)] left-0 z-50 bg-[#0a0a0a] rounded-[1.5rem] p-3 shadow-2xl border border-white/[0.05] w-[calc(100vw-3rem)] max-w-xs"
+                    className="w-[calc(100vw-2rem)] md:w-[480px] max-w-md md:max-w-none max-h-[70vh]"
                   >
+                    <PromptPopoverHeader>Model</PromptPopoverHeader>
                     <ModelDropdown
                       imageMode={imageMode}
                       selectedModel={selectedModel}
                       onSelect={handleModelSelect}
                       onClose={() => setOpenDropdown(null)}
                     />
-                  </div>
+                  </PromptPopover>
                 )}
               </div>
 
@@ -1660,58 +1896,38 @@ export default function VideoStudio({
                   <button
                     type="button"
                     onClick={toggleDropdown("ar")}
-                    className="flex items-center gap-2 px-3 py-2 bg-white/[0.03] hover:bg-white/[0.06] rounded-md transition-all border border-white/[0.03] group whitespace-nowrap"
+                    className={promptControlClassName({
+                      active: openDropdown === "ar",
+                    })}
                   >
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      className="opacity-40 text-white"
-                    >
-                      <rect
-                        x="3"
-                        y="3"
-                        width="18"
-                        height="18"
-                        rx="2"
-                        ry="2"
-                      />
-                    </svg>
-                    <span className="text-[11px] font-semibold text-white/70 group-hover:text-[#22d3ee] transition-colors">
+                    <PromptAspectRatioIcon />
+                    <span className={PROMPT_CONTROL_LABEL_CLASS}>
                       {selectedAr}
                     </span>
                   </button>
                   {openDropdown === "ar" && (
-                    <div
-                      ref={dropdownRef}
+                    <PromptPopover
                       onClick={(e) => e.stopPropagation()}
-                      className="absolute bottom-[calc(100%+12px)] left-0 z-50 bg-[#0a0a0a] rounded-lg p-3 shadow-2xl border border-white/[0.05] max-h-80 overflow-y-auto custom-scrollbar min-w-[160px]"
                     >
-                      <div className="text-xs font-bold text-white/20 border-b border-white/[0.03] mb-2">
+                      <PromptPopoverHeader>
                         Aspect Ratio
-                      </div>
-                      <div className="flex flex-col gap-1">
+                      </PromptPopoverHeader>
+                      <PromptMenuList>
                         {getCurrentAspectRatios(selectedModel).map((r) => (
-                          <div
+                          <PromptMenuItem
                             key={r}
-                            className="flex items-center justify-between p-3 hover:bg-white/5 rounded cursor-pointer transition-all group/opt"
+                            selected={selectedAr === r}
                             onClick={(e) => {
                               e.stopPropagation();
                               setSelectedAr(r);
                               setOpenDropdown(null);
                             }}
                           >
-                            <span className="text-[11px] font-semibold text-white/70 group-hover/opt:text-white transition-opacity">
-                              {r}
-                            </span>
-                            {selectedAr === r && <CheckSvg />}
-                          </div>
+                            {r}
+                          </PromptMenuItem>
                         ))}
-                      </div>
-                    </div>
+                      </PromptMenuList>
+                    </PromptPopover>
                   )}
                 </div>
               )}
@@ -1722,11 +1938,13 @@ export default function VideoStudio({
                   <button
                     type="button"
                     onClick={toggleDropdown("effect")}
-                    className="flex items-center gap-2 px-3 py-2 bg-white/[0.03] hover:bg-white/[0.06] rounded-md transition-all border border-white/[0.03] group whitespace-nowrap"
+                    className={promptControlClassName({
+                      active: openDropdown === "effect",
+                    })}
                   >
                     <svg
-                      width="14"
-                      height="14"
+                      width="16"
+                      height="16"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
@@ -1735,38 +1953,34 @@ export default function VideoStudio({
                     >
                       <path d="M5 3l14 9-14 9V3z" />
                     </svg>
-                    <span className="text-[11px] font-semibold text-white/70 group-hover:text-[#22d3ee] transition-colors max-w-[140px] truncate">
+                    <span className={`${PROMPT_CONTROL_LABEL_CLASS} max-w-[140px] truncate`}>
                       {selectedEffect || "Effect"}
                     </span>
                   </button>
                   {openDropdown === "effect" && (
-                    <div
-                      ref={dropdownRef}
+                    <PromptPopover
                       onClick={(e) => e.stopPropagation()}
-                      className="absolute bottom-[calc(100%+12px)] left-0 z-50 bg-[#0a0a0a] rounded-lg p-3 shadow-2xl border border-white/[0.05] max-h-80 overflow-y-auto custom-scrollbar min-w-[200px]"
+                      className="min-w-[200px]"
                     >
-                      <div className="text-xs font-bold text-white/20 border-b border-white/[0.03] mb-2">
+                      <PromptPopoverHeader>
                         Effect Type
-                      </div>
-                      <div className="flex flex-col gap-1">
+                      </PromptPopoverHeader>
+                      <PromptMenuList>
                         {getEffectsForI2VModel(selectedModel).map((eff) => (
-                          <div
+                          <PromptMenuItem
                             key={eff}
-                            className="flex items-center justify-between p-2 hover:bg-white/5 rounded cursor-pointer transition-all group/opt"
+                            selected={selectedEffect === eff}
                             onClick={(e) => {
                               e.stopPropagation();
                               setSelectedEffect(eff);
                               setOpenDropdown(null);
                             }}
                           >
-                            <span className="text-[11px] font-semibold text-white/70 group-hover/opt:text-white">
-                              {eff}
-                            </span>
-                            {selectedEffect === eff && <CheckSvg />}
-                          </div>
+                            {eff}
+                          </PromptMenuItem>
                         ))}
-                      </div>
-                    </div>
+                      </PromptMenuList>
+                    </PromptPopover>
                   )}
                 </div>
               )}
@@ -1777,52 +1991,38 @@ export default function VideoStudio({
                   <button
                     type="button"
                     onClick={toggleDropdown("duration")}
-                    className="flex items-center gap-2 px-3 py-2 bg-white/[0.03] hover:bg-white/[0.06] rounded-md transition-all border border-white/[0.03] group whitespace-nowrap"
+                    className={promptControlClassName({
+                      active: openDropdown === "duration",
+                    })}
                   >
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      className="opacity-40 text-white"
-                    >
-                      <circle cx="12" cy="12" r="10" />
-                      <polyline points="12 6 12 12 16 14" />
-                    </svg>
-                    <span className="text-xs font-semibold text-white/70 group-hover:text-[#22d3ee] transition-colors">
+                    <PromptDurationIcon />
+                    <span className={PROMPT_CONTROL_LABEL_CLASS}>
                       {selectedDuration}s
                     </span>
                   </button>
                   {openDropdown === "duration" && (
-                    <div
-                      ref={dropdownRef}
+                    <PromptPopover
                       onClick={(e) => e.stopPropagation()}
-                      className="absolute bottom-[calc(100%+12px)] left-0 z-50 bg-[#0a0a0a] rounded-md p-3 shadow-2xl border border-white/10 min-w-[140px]"
                     >
-                      <div className="text-xs font-bold text-white/20 border-b border-white/[0.03] mb-2">
+                      <PromptPopoverHeader>
                         Duration
-                      </div>
-                      <div className="flex flex-col gap-1">
+                      </PromptPopoverHeader>
+                      <PromptMenuList>
                         {getCurrentDurations(selectedModel).map((d) => (
-                          <div
+                          <PromptMenuItem
                             key={d}
-                            className="flex items-center justify-between p-2 hover:bg-white/5 rounded-md cursor-pointer transition-all group/opt"
+                            selected={selectedDuration === d}
                             onClick={(e) => {
                               e.stopPropagation();
                               setSelectedDuration(d);
                               setOpenDropdown(null);
                             }}
                           >
-                            <span className="text-xs font-semibold text-white/70 group-hover/opt:text-white">
-                              {d}s
-                            </span>
-                            {selectedDuration === d && <CheckSvg />}
-                          </div>
+                            {d}s
+                          </PromptMenuItem>
                         ))}
-                      </div>
-                    </div>
+                      </PromptMenuList>
+                    </PromptPopover>
                   )}
                 </div>
               )}
@@ -1833,62 +2033,69 @@ export default function VideoStudio({
                   <button
                     type="button"
                     onClick={toggleDropdown("resolution")}
-                    className="flex items-center gap-2 px-3 py-2 bg-white/[0.03] hover:bg-white/[0.06] rounded-md transition-all border border-white/[0.03] group whitespace-nowrap"
+                    className={promptControlClassName({
+                      active: openDropdown === "resolution",
+                    })}
                   >
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      className="opacity-40 text-white"
-                    >
-                      <path d="M6 2L3 6v15a2 2 0 002 2h14a2 2 0 002-2V6l-3-4H6z" />
-                    </svg>
-                    <span className="text-[11px] font-semibold text-white/70 group-hover:text-[#22d3ee] transition-colors">
+                    <PromptQualityIcon />
+                    <span className={PROMPT_CONTROL_LABEL_CLASS}>
                       {selectedResolution || "720p"}
                     </span>
                   </button>
                   {openDropdown === "resolution" && (
-                    <div
-                      ref={dropdownRef}
+                    <PromptPopover
                       onClick={(e) => e.stopPropagation()}
-                      className="absolute bottom-[calc(100%+12px)] left-0 z-50 bg-[#0a0a0a] rounded-md p-3 shadow-2xl border border-white/[0.05] min-w-[140px]"
                     >
-                      <div className="text-xs font-bold text-white/20 border-b border-white/[0.03] mb-2">
+                      <PromptPopoverHeader>
                         Resolution
-                      </div>
-                      <div className="flex flex-col gap-1">
+                      </PromptPopoverHeader>
+                      <PromptMenuList>
                         {getCurrentResolutions(selectedModel).map((r) => (
-                          <div
+                          <PromptMenuItem
                             key={r}
-                            className="flex items-center justify-between p-3 hover:bg-white/5 rounded cursor-pointer transition-all group/opt"
+                            selected={selectedResolution === r}
                             onClick={(e) => {
                               e.stopPropagation();
                               setSelectedResolution(r);
                               setOpenDropdown(null);
                             }}
                           >
-                            <span className="text-[11px] font-semibold text-white/70 group-hover/opt:text-white">
-                              {r}
-                            </span>
-                            {selectedResolution === r && <CheckSvg />}
-                          </div>
+                            {r}
+                          </PromptMenuItem>
                         ))}
-                      </div>
-                    </div>
+                      </PromptMenuList>
+                    </PromptPopover>
                   )}
                 </div>
               )}
-            </div>
+
+              {canUploadImageReference && (
+                <button
+                  type="button"
+                  className={promptControlClassName()}
+                  onClick={() => setIsDrawModalOpen(true)}
+                >
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.5"
+                    className="opacity-40 text-white group-hover:text-[#22d3ee] transition-colors"
+                  >
+                    <path d="M12 20h9" />
+                    <path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z" />
+                  </svg>
+                  <span className={PROMPT_CONTROL_LABEL_CLASS}>Draw</span>
+                </button>
+              )}
+            </PromptControls>
 
             {/* Generate button */}
-            <button
-              type="button"
+            <PromptAction
               onClick={handleGenerate}
               disabled={generating}
-              className="bg-[#22d3ee] text-black px-4 py-2 rounded-md font-medium text-sm hover:bg-[#e5ff33] hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-2 w-full sm:w-auto shadow-lg shadow-[#22d3ee]/10 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {generating ? (
                 <>
@@ -1897,17 +2104,14 @@ export default function VideoStudio({
                   </span>{" "}
                   Generating...
                 </>
-              ) : generateError ? (
-                `Error: ${generateError}`
               ) : (
                 <>
                   <span>Generate</span>
                 </>
               )}
-            </button>
-          </div>
-        </div>
-      </div>
+            </PromptAction>
+          </PromptFooter>
+      </PromptComposer>
 
       {/* ── FULLSCREEN VIDEO MODAL ── */}
       {fullscreenUrl && (
@@ -1938,6 +2142,15 @@ export default function VideoStudio({
           />
         </div>
       )}
+
+      <DrawModal
+        isOpen={isDrawModalOpen}
+        onClose={() => setIsDrawModalOpen(false)}
+        apiKey={apiKey}
+        batchSize={1}
+        onAddHistoryItem={handleDrawReference}
+      />
+      <Toaster position="top-right" containerStyle={{ zIndex: 99999 }} toastOptions={{ duration: 5000, style: { background: '#18181b', color: '#ffffff', border: '1px solid rgba(255,255,255,0.15)', fontSize: '13px', borderRadius: '12px', boxShadow: '0 10px 30px rgba(0,0,0,0.6)', maxWidth: '440px', wordBreak: 'break-word', whiteSpace: 'pre-wrap', padding: '12px 16px' } }} />
     </div>
   );
 }
