@@ -5052,16 +5052,14 @@ export const t2vModels = [
         "default": "normal"
       },
       "duration": {
-        "enum": [
-          6,
-          10,
-          15
-        ],
-        "title": "Duration",
-        "name": "duration",
         "type": "int",
-        "description": "The duration of the generated video in seconds.",
-        "default": 6
+        "title": "Duration (seconds)",
+        "name": "duration",
+        "description": "Video duration in seconds (6–30). Cost: $0.025/s at 480p, $0.05/s at 720p.",
+        "default": 6,
+        "minValue": 6,
+        "maxValue": 30,
+        "step": 1
       }
     },
     "provider": "grok",
@@ -7144,7 +7142,7 @@ export const t2vModels = [
         "description": "The duration of the generated video in seconds.",
         "default": 5,
         "minValue": 4,
-        "maxValue": 16,
+        "maxValue": 30,
         "step": 1
       },
       "generate_audio": {
@@ -13635,15 +13633,13 @@ export const i2vModels = [
       },
       "duration": {
         "type": "int",
-        "title": "Duration",
+        "title": "Duration (seconds)",
         "name": "duration",
-        "description": "The duration of the generated video in seconds.",
-        "enum": [
-          6,
-          10,
-          15
-        ],
-        "default": 6
+        "description": "Video duration in seconds (6–30). Cost: $0.025/s at 480p, $0.05/s at 720p.",
+        "default": 6,
+        "minValue": 6,
+        "maxValue": 30,
+        "step": 1
       }
     },
     "provider": "grok",
@@ -17984,7 +17980,7 @@ export const i2vModels = [
         "description": "The duration of the generated video in seconds.",
         "default": 5,
         "minValue": 4,
-        "maxValue": 16,
+        "maxValue": 30,
         "step": 1
       },
       "generate_audio": {
