@@ -1,18 +1,17 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, useId } from "react";
 import toast, { Toaster } from "react-hot-toast";
 import { generateVideo, generateI2V, processV2V, uploadFile } from "../muapi.js";
 import { formatErrorMessage } from "../utils/formatError.js";
 import { scopedPersistKey, migrateLegacyPersistKey } from "../persistKey.js";
 import DrawModal from "./DrawModal.jsx";
+import ModelParameterControls from "./ModelParameterControls.jsx";
 import MobileGenerationActions, {
   GenerationCopyButtons,
 } from "./MobileGenerationActions.jsx";
 import {
   t2vModels,
-  i2vModels,
-  v2vModels,
   getAspectRatiosForVideoModel,
   getDurationsForModel,
   getResolutionsForVideoModel,
@@ -21,9 +20,43 @@ import {
   getResolutionsForI2VModel,
   getEffectsForI2VModel,
   getDefaultEffectForI2VModel,
-  getModesForModel,
-  getMaxImagesForI2VModel,
 } from "../models.js";
+import {
+  getFamilyVariant,
+  videoModelCatalog,
+  videoModelPickerEntries,
+  videoModelPickerEntryByVariantId,
+} from "../modelFamilies.js";
+import {
+  buildReferenceParams,
+  getModelMediaCapabilities,
+  recordGenerationSource,
+  shouldDisableVideoPrompt,
+} from "../modelCapabilities.js";
+import {
+  buildSupplementalInputPayload,
+  createModelParameterValues,
+  getSupplementalModelInputs,
+} from "../modelParameters.js";
+import {
+  appendVideoWorkflowMedia,
+  buildVideoWorkflowMediaParams,
+  getVideoWorkflowControlLabel,
+  getVideoWorkflowControlState,
+  getVideoWorkflowDraftKey,
+  getVideoWorkflowFamily,
+  getVideoWorkflowMediaConfig,
+  getVideoWorkflowMediaSlots,
+  getVideoWorkflowSlotRemaining,
+  inferVideoWorkflowId,
+  legacyVideoMediaToWorkflowDraft,
+  projectVideoWorkflowMedia,
+  removeVideoWorkflowMedia,
+  resolvePersistedVideoWorkflowSelection,
+  resolveVideoBaseVariant,
+  resolveVideoWorkflowVariant,
+  validateVideoWorkflowMedia,
+} from "../videoWorkflows.js";
 import {
   PROMPT_CONTROL_LABEL_CLASS,
   PROMPT_MEDIA_PREVIEW_CLASS,
@@ -43,13 +76,9 @@ import {
   promptControlClassName,
   promptMediaButtonClassName,
 } from "./prompt/PromptComposer.jsx";
-
-// ── tiny helpers ──────────────────────────────────────────────────────────────
-
-function getQualitiesForModel(modelList, modelId) {
-  const model = modelList.find((m) => m.id === modelId);
-  return model?.inputs?.quality?.enum || [];
-}
+import en from "../messages/en/videoStudio.json";
+import zh from "../messages/zh/videoStudio.json";
+import { resolveCopy } from "../i18nUtils";
 
 async function downloadFile(url, filename) {
   try {
@@ -66,6 +95,244 @@ async function downloadFile(url, filename) {
   } catch {
     window.open(url, "_blank");
   }
+}
+
+function mergeReferenceUrls(current, incoming, limit) {
+  return [...new Set([...current, ...incoming])].slice(0, limit);
+}
+
+const EMPTY_WORKFLOW_MEDIA_DRAFT = Object.freeze({});
+
+function workflowContextKey(familyId, workflowId) {
+  return `${familyId}:${workflowId || "base"}`;
+}
+
+function isSameSelection(left, right) {
+  return (
+    left?.selectedFamilyId === right?.selectedFamilyId &&
+    left?.selectedModel === right?.selectedModel &&
+    left?.selectedWorkflowId === right?.selectedWorkflowId
+  );
+}
+
+function ReferenceMediaLabel({ label, required = false }) {
+  if (!label) return null;
+  return (
+    <span
+      className={`flex min-h-6 max-w-[88px] items-start justify-center text-balance text-center text-[10px] font-semibold leading-3 ${
+        required ? "text-white/60" : "text-white/45"
+      }`}
+    >
+      {label}
+      {required && (
+        <span className="ml-0.5 text-[#22d3ee]" aria-hidden="true">
+          *
+        </span>
+      )}
+    </span>
+  );
+}
+
+function ReferencePreview({
+  type,
+  url,
+  index,
+  onRemove,
+  label = null,
+  description = null,
+  copy = en,
+}) {
+  const mediaLabel = label || (type === "image" ? copy.media.image : type === "video" ? copy.media.video : copy.media.audio);
+  const actionLabel = description || mediaLabel;
+  return (
+    <div className="flex min-w-[60px] flex-col items-center gap-1.5">
+      <div className={PROMPT_MEDIA_PREVIEW_CLASS}>
+        {type === "image" ? (
+          <img src={url} alt="" className="w-full h-full object-cover" />
+        ) : type === "video" ? (
+          <video src={url} className="w-full h-full object-cover" muted />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center bg-white/5 text-primary">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M9 18V5l10-2v13" />
+              <circle cx="6" cy="18" r="3" />
+              <circle cx="16" cy="16" r="3" />
+            </svg>
+          </div>
+        )}
+        <button
+          type="button"
+          aria-label={`${copy.media.removePrefix} ${actionLabel}`}
+          title={`${copy.media.removePrefix} ${actionLabel}`}
+          onClick={() => onRemove(index)}
+          className="absolute top-0.5 right-0.5 w-4 h-4 bg-black/60 hover:bg-black rounded-full flex items-center justify-center text-white/85 hover:text-white text-[8px] border border-white/5"
+        >
+          ×
+        </button>
+      </div>
+      <ReferenceMediaLabel label={mediaLabel} />
+    </div>
+  );
+}
+
+function ReferenceUploadButton({
+  inputRef,
+  accept,
+  multiple,
+  onChange,
+  onClick,
+  title,
+  uploading,
+  progress,
+  type,
+  label = null,
+  required = false,
+  disabled = false,
+  copy = en,
+}) {
+  const localInputRef = useRef(null);
+  const resolvedInputRef = inputRef || localInputRef;
+  const announcedProgress = Math.min(
+    100,
+    Math.max(0, Math.floor(progress / 10) * 10),
+  );
+  const [isUploadDragging, setIsUploadDragging] = useState(false);
+  const uploadDragCounterRef = useRef(0);
+
+  const acceptPrefixes = (accept || "")
+    .split(",")
+    .map((token) => token.trim())
+    .filter(Boolean);
+  const fileMatchesAccept = (file) => {
+    if (acceptPrefixes.length === 0) return true;
+    return acceptPrefixes.some((token) => {
+      if (token.endsWith("/*")) {
+        return file.type?.startsWith(token.slice(0, -1));
+      }
+      if (token.startsWith(".")) {
+        return file.name?.toLowerCase().endsWith(token.toLowerCase());
+      }
+      return file.type === token;
+    });
+  };
+
+  const handleUploadDragEnter = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (disabled || uploading) return;
+    uploadDragCounterRef.current += 1;
+    if (e.dataTransfer?.items && e.dataTransfer.items.length > 0) {
+      setIsUploadDragging(true);
+    }
+  };
+
+  const handleUploadDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    uploadDragCounterRef.current -= 1;
+    if (uploadDragCounterRef.current <= 0) {
+      uploadDragCounterRef.current = 0;
+      setIsUploadDragging(false);
+    }
+  };
+
+  const handleUploadDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleUploadDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    uploadDragCounterRef.current = 0;
+    setIsUploadDragging(false);
+    if (disabled || uploading) return;
+    const droppedFiles = Array.from(e.dataTransfer?.files || []).filter(
+      fileMatchesAccept,
+    );
+    if (droppedFiles.length === 0) return;
+    const filesToUse = multiple ? droppedFiles : [droppedFiles[0]];
+    onChange?.({ target: { files: filesToUse, value: "" } });
+  };
+
+  return (
+    <div
+      className={
+        label
+          ? "relative flex min-w-[60px] flex-col items-center gap-1.5"
+          : "relative"
+      }
+    >
+      <input
+        ref={resolvedInputRef}
+        type="file"
+        accept={accept}
+        multiple={multiple}
+        className="hidden"
+        onChange={onChange}
+      />
+      <button
+        type="button"
+        title={title}
+        aria-label={title}
+        aria-busy={uploading || undefined}
+        disabled={disabled}
+        onClick={onClick || (() => resolvedInputRef.current?.click())}
+        onDragEnter={handleUploadDragEnter}
+        onDragLeave={handleUploadDragLeave}
+        onDragOver={handleUploadDragOver}
+        onDrop={handleUploadDrop}
+        className={`${promptMediaButtonClassName()} disabled:cursor-not-allowed disabled:opacity-50${
+          isUploadDragging ? " ring-2 ring-primary border-primary bg-primary/10" : ""
+        }`}
+      >
+        {uploading ? (
+          <div className="flex flex-col items-center justify-center w-full h-full absolute inset-0 bg-black/80 z-20 backdrop-blur-[2px]">
+            <svg className="w-8 h-8 -rotate-90">
+              <circle cx="16" cy="16" r="14" stroke="currentColor" strokeWidth="2" fill="transparent" className="text-white/10" />
+              <circle
+                cx="16"
+                cy="16"
+                r="14"
+                stroke="currentColor"
+                strokeWidth="2"
+                fill="transparent"
+                strokeDasharray={88}
+                strokeDashoffset={88 - (88 * progress) / 100}
+                className="text-[#22d3ee] transition-all duration-300"
+              />
+            </svg>
+            <span className="absolute text-[9px] font-black text-[#22d3ee] leading-none">{progress}%</span>
+          </div>
+        ) : type === "video" ? (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" className="text-white/40 group-hover:text-[#22d3ee] transition-colors">
+            <polygon points="23 7 16 12 23 17 23 7" />
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+          </svg>
+        ) : type === "audio" ? (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-white/40 group-hover:text-[#22d3ee] transition-colors">
+            <path d="M9 18V5l10-2v13" />
+            <circle cx="6" cy="18" r="3" />
+            <circle cx="16" cy="16" r="3" />
+          </svg>
+        ) : (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-white/40 group-hover:text-[#22d3ee] transition-colors">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+        )}
+      </button>
+      <span
+        className="sr-only"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {uploading ? copy.upload.uploadingProgress.replace('{title}', title).replace('{progress}', announcedProgress) : ""}
+      </span>
+      <ReferenceMediaLabel label={label} required={required} />
+    </div>
+  );
 }
 
 // ── SVG icons (kept inline to avoid extra deps) ───────────────────────────────
@@ -146,15 +413,38 @@ const PROVIDER_LOGOS = {
 
 const invertLogos = ['openai', 'blackforest', 'runway', 'ideogram', 'lightricks', 'grok'];
 
-function ModelDropdown({ imageMode, selectedModel, onSelect, onClose }) {
+function ModelDropdown({ selectedModel, onSelect, onClose }) {
   const [search, setSearch] = useState("");
-  const generationModels = imageMode ? i2vModels : t2vModels;
-  
-  // Find current model's provider to pre-select the provider tab ("slide")
-  const allCurrentModels = [...generationModels, ...v2vModels];
-  const currentModelObj = allCurrentModels.find((m) => m.id === selectedModel);
-  const initialProvider = currentModelObj?.provider || "all";
-  const [selectedProvider, setSelectedProvider] = useState(initialProvider);
+  const selectedEntry = videoModelPickerEntryByVariantId.get(selectedModel);
+  const selectedModelProvider = selectedEntry?.family.provider || "all";
+  const modelCategories = [
+    {
+      id: "all",
+      label: copy.categories.all,
+      entries: videoModelPickerEntries,
+    },
+    {
+      id: "t2v",
+      label: copy.categories.t2v,
+      entries: videoModelPickerEntries.filter((entry) => entry.variantsByMode.t2v),
+    },
+    {
+      id: "i2v",
+      label: copy.categories.i2v,
+      entries: videoModelPickerEntries.filter((entry) => entry.variantsByMode.i2v),
+    },
+    {
+      id: "v2v",
+      label: copy.categories.v2v,
+      entries: videoModelPickerEntries.filter((entry) => entry.variantsByMode.v2v),
+    },
+  ];
+  const [selectedCategory, setSelectedCategory] = useState("all");
+  const [selectedProvider, setSelectedProvider] = useState(
+    () => selectedModelProvider,
+  );
+  const activeCategory = modelCategories.find((category) => category.id === selectedCategory) || modelCategories[0];
+  const modelEntries = activeCategory.entries;
 
   const activeItemRef = useRef(null);
 
@@ -205,9 +495,9 @@ function ModelDropdown({ imageMode, selectedModel, onSelect, onClose }) {
   const availableProviders = [];
   const seenProviders = new Set();
   
-  allCurrentModels.forEach(m => {
-    const pId = m.provider || 'muapi';
-    const pName = m.provider_name || 'Muapi';
+  modelEntries.forEach(({ family }) => {
+    const pId = family.provider || 'muapi';
+    const pName = family.provider_name || 'Muapi';
     if (!seenProviders.has(pId)) {
       seenProviders.add(pId);
       availableProviders.push({ id: pId, name: pName });
@@ -216,79 +506,71 @@ function ModelDropdown({ imageMode, selectedModel, onSelect, onClose }) {
 
   const lf = search.toLowerCase();
 
-  const filterFn = (m) => {
+  const filtered = modelEntries.filter((entry) => {
+    const { family } = entry;
     // 1. Filter by provider tab
     if (selectedProvider !== "all") {
-      const pId = m.provider || 'muapi';
+      const pId = family.provider || 'muapi';
       if (pId !== selectedProvider) return false;
     }
     // 2. Filter by search query
-    return (
-      m.name.toLowerCase().includes(lf) ||
-      m.id.toLowerCase().includes(lf)
-    );
-  };
+    return entry.searchText.includes(lf);
+  });
 
-  const filteredMain = generationModels.filter(filterFn);
-  const filteredV2V = v2vModels.filter(filterFn);
-
-  const getIconColor = (m, isV2V) => {
-    if (isV2V) return "bg-orange-500/10 text-orange-400 border-orange-500/10";
-    if (m.id.includes("kling")) return "bg-blue-500/10 text-blue-400 border-blue-500/10";
-    if (m.id.includes("veo")) return "bg-purple-500/10 text-purple-400 border-purple-500/10";
-    if (m.id.includes("sora")) return "bg-rose-500/10 text-rose-400 border-rose-500/10";
+  const getIconColor = (family) => {
+    if (family.id.includes("kling")) return "bg-blue-500/10 text-blue-400 border-blue-500/10";
+    if (family.id.includes("veo")) return "bg-purple-500/10 text-purple-400 border-purple-500/10";
+    if (family.id.includes("sora")) return "bg-rose-500/10 text-rose-400 border-rose-500/10";
     return "bg-primary/10 text-primary border-primary/10";
   };
 
-  const renderItem = (m, isV2V = false) => (
+  const renderItem = (entry) => {
+    const { family } = entry;
+    const isSelected = selectedEntry === entry;
+    return (
     <div
-      key={m.id}
-      ref={selectedModel === m.id ? activeItemRef : null}
-      className={`flex items-center justify-between p-3.5 hover:bg-white/5 rounded-2xl cursor-pointer transition-all border border-transparent hover:border-white/5 ${selectedModel === m.id ? "bg-white/5 border-white/5" : ""}`}
+      key={entry.id}
+      ref={isSelected ? activeItemRef : null}
+      className={`flex items-center justify-between p-3.5 hover:bg-white/5 rounded-2xl cursor-pointer transition-all border border-transparent hover:border-white/5 ${isSelected ? "bg-white/5 border-white/5" : ""}`}
       onClick={(e) => {
         e.stopPropagation();
-        onSelect(m, isV2V);
+        onSelect(entry, activeCategory.id);
         onClose();
       }}
     >
       <div className="flex items-center gap-3.5">
-        {PROVIDER_LOGOS[m.provider] ? (
+        {PROVIDER_LOGOS[family.provider] ? (
           <div className="w-8 h-8 rounded-xl border border-white/5 overflow-hidden shrink-0 flex items-center justify-center bg-white/[0.02]">
             <img
-              src={PROVIDER_LOGOS[m.provider]}
-              alt={m.provider_name}
-              className={`w-full h-full object-contain p-1 ${invertLogos.includes(m.provider) ? "invert" : ""}`}
+              src={PROVIDER_LOGOS[family.provider]}
+              alt={family.provider_name}
+              className={`w-full h-full object-contain p-1 ${invertLogos.includes(family.provider) ? "invert" : ""}`}
             />
           </div>
         ) : (
           <div
-            className={`w-9 h-9 ${getIconColor(m, isV2V)} border rounded-xl flex items-center justify-center font-black text-xs shadow-inner uppercase`}
+            className={`w-9 h-9 ${getIconColor(family)} border rounded-xl flex items-center justify-center font-black text-xs shadow-inner uppercase`}
           >
-            {m.name.charAt(0)}
+            {entry.name.charAt(0)}
           </div>
         )}
         <div className="flex flex-col gap-0.5 min-w-0">
           <span className="text-xs font-bold text-white tracking-tight truncate">
-            {m.name}
+            {entry.name}
           </span>
-          {isV2V ? (
-            <span className="text-[9px] text-orange-400/70">
-              {m.imageField ? "Upload a video and image" : "Upload a video to use"}
-            </span>
-          ) : (
-            selectedProvider === "all" && m.provider_name && (
+          <div className="flex items-center gap-1.5">
+            {selectedProvider === "all" && family.provider_name && (
               <span className="text-[9px] text-white/40">
-                {m.provider_name}
+                {family.provider_name}
               </span>
-            )
-          )}
+            )}
+          </div>
         </div>
       </div>
-      {selectedModel === m.id && <CheckSvg />}
+      {isSelected && <CheckSvg />}
     </div>
-  );
-
-  const invertLogos = ['openai', 'blackforest', 'runway', 'ideogram', 'lightricks', 'grok'];
+    );
+  };
 
   return (
     <div className="flex gap-4 h-full max-h-[70vh] min-h-[350px]">
@@ -302,7 +584,7 @@ function ModelDropdown({ imageMode, selectedModel, onSelect, onClose }) {
               ? "bg-white/10 text-yellow-400 border-yellow-500/30 shadow-md scale-105"
               : "bg-white/[0.02] text-white/50 border-white/[0.03] hover:bg-white/5 hover:text-white"
           }`}
-          title="All Providers"
+          title={copy.providers.allProviders}
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill={selectedProvider === "all" ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2">
             <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
@@ -317,9 +599,10 @@ function ModelDropdown({ imageMode, selectedModel, onSelect, onClose }) {
               key={p.id}
               type="button"
               onClick={() => setSelectedProvider(p.id)}
-              className={`w-8 h-8 flex-shrink-0 rounded-full flex items-center justify-center font-black text-[10px] border transition-all flex-shrink-0 cursor-pointer overflow-hidden ${
+              aria-pressed={isSelected}
+              className={`w-8 h-8 flex-shrink-0 rounded-full flex items-center justify-center overflow-hidden font-black text-[10px] border transition-all cursor-pointer ${
                 isSelected
-                  ? `${style.bg} border-white/25 scale-105 shadow-md`
+                  ? `${style.bg} scale-105 shadow-md shadow-black/10`
                   : "bg-white/[0.02] text-white/40 border-white/[0.02] hover:bg-white/5 hover:text-white/80"
               }`}
               title={p.name}
@@ -340,7 +623,26 @@ function ModelDropdown({ imageMode, selectedModel, onSelect, onClose }) {
 
       {/* Right Pane: Search + Lists */}
       <div className="flex-1 flex flex-col gap-2 min-w-0">
-        <div className="px-1 pb-2 border-b border-white/5 shrink-0">
+        <div className="px-1 pb-2 border-b border-white/5 shrink-0 space-y-2">
+          <div className="flex gap-1.5 overflow-x-auto custom-scrollbar pb-0.5">
+            {modelCategories.map((category) => (
+              <button
+                key={category.id}
+                type="button"
+                onClick={() => {
+                  setSelectedCategory(category.id);
+                  setSelectedProvider("all");
+                }}
+                className={`shrink-0 rounded-lg px-2.5 py-1.5 text-[10px] font-bold transition-colors border ${
+                  selectedCategory === category.id
+                    ? "bg-primary/15 text-primary border-primary/30"
+                    : "bg-white/[0.02] text-white/50 border-white/[0.04] hover:bg-white/5 hover:text-white"
+                }`}
+              >
+                {category.label}
+              </button>
+            ))}
+          </div>
           <div className="flex items-center gap-3 bg-white/5 rounded-xl px-4 py-2 border border-white/5 focus-within:border-primary/50 transition-colors">
             <svg
               width="14"
@@ -356,9 +658,13 @@ function ModelDropdown({ imageMode, selectedModel, onSelect, onClose }) {
             </svg>
             <input
               type="text"
-              placeholder="Search models..."
+              placeholder={copy.search.placeholder}
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => {
+                const value = e.target.value;
+                setSearch(value);
+                if (value.trim()) setSelectedProvider("all");
+              }}
               onClick={(e) => e.stopPropagation()}
               className="bg-transparent border-none text-xs text-white focus:ring-0 w-full p-0 outline-none"
             />
@@ -366,7 +672,7 @@ function ModelDropdown({ imageMode, selectedModel, onSelect, onClose }) {
         </div>
         
         <div className="text-xs font-bold text-secondary px-2 py-1 shrink-0 flex items-center justify-between">
-          <span>Video models</span>
+          <span>{activeCategory.label} models</span>
           {selectedProvider !== "all" && (
             <span className="text-[10px] bg-white/5 px-2 py-0.5 rounded text-white/60">
               {availableProviders.find(p => p.id === selectedProvider)?.name || selectedProvider}
@@ -375,22 +681,12 @@ function ModelDropdown({ imageMode, selectedModel, onSelect, onClose }) {
         </div>
         
         <div className="flex flex-col gap-1.5 overflow-y-auto custom-scrollbar pr-1 pb-2 flex-1">
-          {filteredMain.length === 0 && filteredV2V.length === 0 ? (
+          {filtered.length === 0 ? (
             <div className="text-xs text-white/30 text-center py-6">
               No models found
             </div>
           ) : (
-            <>
-              {filteredMain.map((m) => renderItem(m, false))}
-              {filteredV2V.length > 0 && (
-                <>
-                  <div className="text-xs font-bold text-orange-400/70 px-3 py-2 mt-1 border-t border-white/5">
-                    Video Tools
-                  </div>
-                  {filteredV2V.map((m) => renderItem(m, true))}
-                </>
-              )}
-            </>
+            filtered.map((entry) => renderItem(entry))
           )}
         </div>
       </div>
@@ -412,23 +708,28 @@ export default function VideoStudio({
   onGenerationComplete,
   onGenerationError,
   historyItems,
+  onDeleteHistoryItem,
   droppedFiles,
   onFilesHandled,
+  locale = "en",
 }) {
+  const copy = resolveCopy(en, zh, locale);
   const LEGACY_PERSIST_KEY = "hg_video_studio_persistent";
   const PERSIST_KEY = scopedPersistKey(LEGACY_PERSIST_KEY, apiKey);
   useEffect(() => {
     migrateLegacyPersistKey(LEGACY_PERSIST_KEY, PERSIST_KEY);
   }, [PERSIST_KEY]);
 
-  // ── mode state ──
+  // ── generation state ──
   const [imageMode, setImageMode] = useState(false); // i2v
   const [v2vMode, setV2vMode] = useState(false);
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState(null);
 
   // ── model / params ──
   const defaultModel = t2vModels[0];
+  const defaultFamily = videoModelCatalog.familyByVariantId.get(defaultModel.id);
   const [selectedModel, setSelectedModel] = useState(defaultModel.id);
-  const [selectedModelName, setSelectedModelName] = useState(defaultModel.name);
+  const [selectedFamilyId, setSelectedFamilyId] = useState(defaultFamily.id);
   const [selectedAr, setSelectedAr] = useState(
     defaultModel.inputs?.aspect_ratio?.default || "16:9",
   );
@@ -441,8 +742,10 @@ export default function VideoStudio({
   const [selectedQuality, setSelectedQuality] = useState(
     defaultModel.inputs?.quality?.default || "",
   );
-  const [selectedMode, setSelectedMode] = useState("");
   const [selectedEffect, setSelectedEffect] = useState("");
+  const [modelParameterValues, setModelParameterValues] = useState(() =>
+    createModelParameterValues(defaultModel),
+  );
 
   // ── upload progress ──
   const [imageProgress, setImageProgress] = useState(0);
@@ -453,19 +756,23 @@ export default function VideoStudio({
   const [showDuration, setShowDuration] = useState(true);
   const [showResolution, setShowResolution] = useState(false);
   const [showQuality, setShowQuality] = useState(false);
-  const [showMode, setShowMode] = useState(false);
   const [showEffect, setShowEffect] = useState(false);
 
   // ── uploads ──
-  const [uploadedImageUrl, setUploadedImageUrl] = useState(null);
   const [uploadedImageUrls, setUploadedImageUrls] = useState([]);
   const [imageUploading, setImageUploading] = useState(false);
   const [uploadedEndImageUrl, setUploadedEndImageUrl] = useState(null);
   const [endImageUploading, setEndImageUploading] = useState(false);
   const [endImageProgress, setEndImageProgress] = useState(0);
-  const [uploadedVideoUrl, setUploadedVideoUrl] = useState(null);
+  const [uploadedVideoUrls, setUploadedVideoUrls] = useState([]);
   const [videoUploading, setVideoUploading] = useState(false);
-  const [uploadedVideoName, setUploadedVideoName] = useState(null);
+  const [uploadedAudioUrls, setUploadedAudioUrls] = useState([]);
+  const [audioUploading, setAudioUploading] = useState(false);
+  const [audioProgress, setAudioProgress] = useState(0);
+  const [workflowMediaDrafts, setWorkflowMediaDrafts] = useState({});
+  const [workflowUploadSlotId, setWorkflowUploadSlotId] = useState(null);
+  const uploadedImageUrl = uploadedImageUrls[0] || null;
+  const uploadedVideoUrl = uploadedVideoUrls[0] || null;
 
   // ── generation / canvas ──
   const [generating, setGenerating] = useState(false);
@@ -475,19 +782,17 @@ export default function VideoStudio({
   const [canvasModel, setCanvasModel] = useState(null);
   const [showCanvas, setShowCanvas] = useState(false);
   const [isDrawModalOpen, setIsDrawModalOpen] = useState(false);
-  const [lastGenerationId, setLastGenerationId] = useState(null);
-  const [lastGenerationModel, setLastGenerationModel] = useState(null);
+  const [generationSources, setGenerationSources] = useState({});
 
   // ── history ──
   const [localHistory, setLocalHistory] = useState([]);
   const [activeHistoryIdx, setActiveHistoryIdx] = useState(0);
 
   // ── dropdown ──
-  const [openDropdown, setOpenDropdown] = useState(null); // 'model'|'ar'|'duration'|'resolution'|'quality'|'mode'|null
+  const [openDropdown, setOpenDropdown] = useState(null);
 
   // ── prompt ──
   const [prompt, setPrompt] = useState("");
-  const [promptDisabled, setPromptDisabled] = useState(false);
 
   // ── refs ──
   const containerRef = useRef(null);
@@ -496,16 +801,49 @@ export default function VideoStudio({
   const imageFileInputRef = useRef(null);
   const endImageFileInputRef = useRef(null);
   const videoFileInputRef = useRef(null);
+  const audioFileInputRef = useRef(null);
   const resultVideoRef = useRef(null);
+  const workflowTriggerRef = useRef(null);
+  const workflowMenuRef = useRef(null);
+  const workflowMenuFocusTargetRef = useRef("selected");
+  const workflowControlId = useId();
+  const workflowMenuId = `${workflowControlId}-menu`;
   const hasRestored = useRef(false);
+  const selectionRef = useRef(null);
+  selectionRef.current = {
+    selectedFamilyId,
+    selectedModel,
+    selectedWorkflowId,
+    imageMode,
+    v2vMode,
+  };
+  const workflowVariantPreferencesRef = useRef(new Map());
+  const workflowUploadSlotRef = useRef(null);
+  const workflowDraftSessionRef = useRef(0);
+  const mediaRef = useRef(null);
+  mediaRef.current = {
+    imageUrls: uploadedImageUrls,
+    endImageUrl: uploadedEndImageUrl,
+    videoUrls: uploadedVideoUrls,
+    audioUrls: uploadedAudioUrls,
+  };
+  const workflowMediaDraftsRef = useRef(workflowMediaDrafts);
+  workflowMediaDraftsRef.current = workflowMediaDrafts;
 
   // ── derived data ──
   const history = historyItems ?? localHistory;
 
-  const getCurrentModels = useCallback(() => {
-    if (v2vMode) return v2vModels;
-    return imageMode ? i2vModels : t2vModels;
-  }, [imageMode, v2vMode]);
+  // See ImageStudio's handleDeleteEntry: when historyItems is server-backed
+  // (White Label / backfilled sessions), localHistory isn't what's rendered,
+  // so removal has to go through the parent to delete server-side and
+  // update the same state `history` reads from.
+  const handleDeleteEntry = useCallback(async (entry, idx) => {
+    if (historyItems && onDeleteHistoryItem) {
+      await onDeleteHistoryItem(entry);
+    } else {
+      setLocalHistory((prev) => prev.filter((_, i) => i !== idx));
+    }
+  }, [historyItems, onDeleteHistoryItem]);
 
   const getCurrentAspectRatios = useCallback(
     (id) =>
@@ -530,20 +868,20 @@ export default function VideoStudio({
   );
 
   const getCurrentModel = useCallback(
-    () => getCurrentModels().find((m) => m.id === selectedModel),
-    [getCurrentModels, selectedModel],
+    () => videoModelCatalog.variantById.get(selectedModel)?.model,
+    [selectedModel],
   );
 
   const isMotionControlSelection = useCallback(
     (modelId, isV2v) => {
       if (!isV2v) return false;
-      const m = v2vModels.find((x) => x.id === modelId);
+      const m = videoModelCatalog.variantById.get(modelId)?.model;
       return !!m?.imageField;
     },
     [],
   );
 
-  // ── update controls when model/mode changes ──────────────────────────────
+  // ── update controls when the selected model changes ─────────────────────
   const applyControlsForModel = useCallback(
     (modelId, isImageMode, isV2vMode) => {
       if (isV2vMode) {
@@ -551,13 +889,11 @@ export default function VideoStudio({
         setShowDuration(false);
         setShowResolution(false);
         setShowQuality(false);
-        setShowMode(false);
         setShowEffect(false);
         return;
       }
 
-      const modelList = isImageMode ? i2vModels : t2vModels;
-      const model = modelList.find((m) => m.id === modelId);
+      const model = videoModelCatalog.variantById.get(modelId)?.model;
 
       const ars = isImageMode
         ? getAspectRatiosForI2VModel(modelId)
@@ -573,7 +909,7 @@ export default function VideoStudio({
         ? getDurationsForI2VModel(modelId)
         : getDurationsForModel(modelId);
       if (durations.length > 0) {
-        setSelectedDuration(durations[0]);
+        setSelectedDuration(model?.inputs?.duration?.default ?? durations[0]);
         setShowDuration(true);
       } else {
         setShowDuration(false);
@@ -589,22 +925,13 @@ export default function VideoStudio({
         setShowResolution(false);
       }
 
-      const qualities = getQualitiesForModel(modelList, modelId);
+      const qualities = model?.inputs?.quality?.enum || [];
       if (qualities.length > 0) {
         setSelectedQuality(model?.inputs?.quality?.default || qualities[0]);
         setShowQuality(true);
       } else {
         setSelectedQuality("");
         setShowQuality(false);
-      }
-
-      const modes = getModesForModel(modelId);
-      if (modes.length > 0) {
-        setSelectedMode(model?.inputs?.mode?.default || modes[0]);
-        setShowMode(true);
-      } else {
-        setSelectedMode("");
-        setShowMode(false);
       }
 
       const effects = isImageMode ? getEffectsForI2VModel(modelId) : [];
@@ -619,38 +946,208 @@ export default function VideoStudio({
     [],
   );
 
+  const selectedFamily =
+    videoModelCatalog.familyById.get(selectedFamilyId) || defaultFamily;
+  const currentFamilyMode = v2vMode ? "v2v" : imageMode ? "i2v" : "t2v";
+  const workflowFamily = getVideoWorkflowFamily(selectedFamilyId);
+  const selectedWorkflow = selectedWorkflowId
+    ? workflowFamily?.workflowById.get(selectedWorkflowId) || null
+    : null;
+  const workflowControlState = getVideoWorkflowControlState(
+    workflowFamily,
+    selectedModel,
+  );
+  const workflowMediaDraftKey = selectedWorkflowId
+    ? getVideoWorkflowDraftKey(selectedFamilyId, selectedWorkflowId)
+    : null;
+  const selectedVariant = videoModelCatalog.variantById.get(selectedModel);
+  const selectedPickerEntry = videoModelPickerEntryByVariantId.get(selectedModel);
+  const activeWorkflowMediaDraft = useMemo(
+    () => workflowMediaDraftKey
+      ? projectVideoWorkflowMedia(
+          selectedVariant?.model,
+          selectedWorkflowId,
+          workflowMediaDrafts[workflowMediaDraftKey] || EMPTY_WORKFLOW_MEDIA_DRAFT,
+        )
+      : null,
+    [
+      selectedVariant,
+      selectedWorkflowId,
+      workflowMediaDraftKey,
+      workflowMediaDrafts,
+    ],
+  );
+  const promptDisabled = shouldDisableVideoPrompt(
+    selectedVariant?.model,
+    currentFamilyMode,
+  );
+  const workflowMediaSlots = useMemo(
+    () => selectedWorkflowId
+      ? getVideoWorkflowMediaSlots(selectedVariant?.model, selectedWorkflowId)
+      : [],
+    [selectedVariant, selectedWorkflowId],
+  );
+  const currentModelCapabilities = getModelMediaCapabilities(selectedVariant?.model);
+  const supplementalInputs = getSupplementalModelInputs(selectedVariant?.model);
+
+  const applySelectedVariant = useCallback(
+    (variant, mode, family, workflowId = null) => {
+      const model = variant.model;
+      const nextV2VMode = mode === "v2v";
+      const nextImageMode = mode === "i2v";
+
+      const previous = selectionRef.current;
+      if (previous?.selectedFamilyId && previous?.selectedModel) {
+        workflowVariantPreferencesRef.current.set(
+          workflowContextKey(previous.selectedFamilyId, previous.selectedWorkflowId),
+          previous.selectedModel,
+        );
+      }
+      workflowVariantPreferencesRef.current.set(
+        workflowContextKey(family.id, workflowId),
+        model.id,
+      );
+
+      selectionRef.current = {
+        selectedFamilyId: family.id,
+        selectedModel: model.id,
+        selectedWorkflowId: workflowId,
+        imageMode: nextImageMode,
+        v2vMode: nextV2VMode,
+      };
+      setSelectedFamilyId(family.id);
+      setSelectedModel(model.id);
+      setSelectedWorkflowId(workflowId);
+      setModelParameterValues((values) =>
+        createModelParameterValues(model, values),
+      );
+      setV2vMode(nextV2VMode);
+      setImageMode(nextImageMode);
+      applyControlsForModel(model.id, nextImageMode, nextV2VMode);
+    },
+    [applyControlsForModel],
+  );
+
+  const reconcileReferencesForModel = useCallback((model) => {
+    const capabilities = getModelMediaCapabilities(model);
+    setUploadedImageUrls((urls) => urls.slice(0, capabilities.image.maxItems));
+    setUploadedVideoUrls((urls) => urls.slice(0, capabilities.video.maxItems));
+    setUploadedAudioUrls((urls) => urls.slice(0, capabilities.audio.maxItems));
+    if (!capabilities.image.separateLastItem) setUploadedEndImageUrl(null);
+  }, []);
+
+  const applyUserSelectedVariant = useCallback(
+    (variant, mode, family, workflowId = null) => {
+      if (workflowId) {
+        const draftKey = getVideoWorkflowDraftKey(family.id, workflowId);
+        setWorkflowMediaDrafts((drafts) => {
+          if (drafts[draftKey]) return drafts;
+          return {
+            ...drafts,
+            [draftKey]: legacyVideoMediaToWorkflowDraft(
+              variant.model,
+              workflowId,
+              mediaRef.current,
+            ),
+          };
+        });
+      } else {
+        reconcileReferencesForModel(variant.model);
+      }
+      if (shouldDisableVideoPrompt(variant.model, mode)) {
+        setPrompt("");
+      }
+      applySelectedVariant(variant, mode, family, workflowId);
+    },
+    [applySelectedVariant, reconcileReferencesForModel],
+  );
+
   // ── Persistence: Load ────────────────────────────────────────────────────
   useEffect(() => {
     try {
       const stored = localStorage.getItem(PERSIST_KEY);
       if (stored) {
         const data = JSON.parse(stored);
-        if (data.imageMode !== undefined) setImageMode(data.imageMode);
-        if (data.v2vMode !== undefined) setV2vMode(data.v2vMode);
-        if (data.selectedModel) setSelectedModel(data.selectedModel);
-        if (data.selectedModelName) setSelectedModelName(data.selectedModelName);
+        let restoredMode = data.v2vMode ? "v2v" : data.imageMode ? "i2v" : "t2v";
+        let restoredModelId = data.selectedModel || defaultModel.id;
+        let restoredWorkflowId = null;
+        let restoredModel = defaultModel;
+        let restoredFamilyId = defaultFamily.id;
+        if (data.selectedModel) {
+          const restored = resolvePersistedVideoWorkflowSelection(
+            data.selectedModel,
+            data.selectedWorkflowId || null,
+            { hasEndFrame: Boolean(data.uploadedEndImageUrl) },
+          );
+          if (restored.family && restored.variant) {
+            restoredModelId = restored.variant.model.id;
+            restoredMode = restored.variant.mode;
+            restoredWorkflowId = restored.workflowId;
+            restoredModel = restored.variant.model;
+            restoredFamilyId = restored.family.id;
+            setSelectedModel(restoredModelId);
+            setSelectedFamilyId(restored.family.id);
+            setSelectedWorkflowId(restored.workflowId);
+            setModelParameterValues(
+              createModelParameterValues(
+                restored.variant.model,
+                data.modelParameterValues || {},
+              ),
+            );
+          }
+        }
+        setImageMode(restoredMode === "i2v");
+        setV2vMode(restoredMode === "v2v");
         if (data.selectedAr) setSelectedAr(data.selectedAr);
         if (data.selectedDuration) setSelectedDuration(data.selectedDuration);
         if (data.selectedResolution) setSelectedResolution(data.selectedResolution);
         if (data.selectedQuality) setSelectedQuality(data.selectedQuality);
-        if (data.selectedMode) setSelectedMode(data.selectedMode);
         if (data.selectedEffect) setSelectedEffect(data.selectedEffect);
-        if (data.uploadedImageUrl) setUploadedImageUrl(data.uploadedImageUrl);
         if (data.uploadedImageUrls) {
           setUploadedImageUrls(data.uploadedImageUrls);
         } else if (data.uploadedImageUrl) {
           setUploadedImageUrls([data.uploadedImageUrl]);
         }
-        if (data.uploadedVideoUrl) setUploadedVideoUrl(data.uploadedVideoUrl);
-        if (data.uploadedVideoName) setUploadedVideoName(data.uploadedVideoName);
+        if (data.uploadedEndImageUrl) setUploadedEndImageUrl(data.uploadedEndImageUrl);
+        if (data.uploadedVideoUrls) {
+          setUploadedVideoUrls(data.uploadedVideoUrls);
+        } else if (data.uploadedVideoUrl) {
+          setUploadedVideoUrls([data.uploadedVideoUrl]);
+        }
+        if (data.uploadedAudioUrls) setUploadedAudioUrls(data.uploadedAudioUrls);
+        const persistedDrafts =
+          data.workflowMediaDrafts && typeof data.workflowMediaDrafts === "object"
+            ? { ...data.workflowMediaDrafts }
+            : {};
+        if (restoredWorkflowId) {
+          const draftKey = getVideoWorkflowDraftKey(
+            restoredFamilyId,
+            restoredWorkflowId,
+          );
+          if (!persistedDrafts[draftKey]) {
+            persistedDrafts[draftKey] = legacyVideoMediaToWorkflowDraft(
+              restoredModel,
+              restoredWorkflowId,
+              {
+                imageUrls: data.uploadedImageUrls ||
+                  (data.uploadedImageUrl ? [data.uploadedImageUrl] : []),
+                endImageUrl: data.uploadedEndImageUrl || null,
+                videoUrls: data.uploadedVideoUrls ||
+                  (data.uploadedVideoUrl ? [data.uploadedVideoUrl] : []),
+                audioUrls: data.uploadedAudioUrls || [],
+              },
+            );
+          }
+        }
+        setWorkflowMediaDrafts(persistedDrafts);
         if (data.prompt) setPrompt(data.prompt);
         if (data.localHistory) setLocalHistory(data.localHistory);
 
         // Update control visibility based on restored model/mode
         applyControlsForModel(
-          data.selectedModel || defaultModel.id,
-          !!data.imageMode,
-          !!data.v2vMode
+          restoredModelId,
+          restoredMode === "i2v",
+          restoredMode === "v2v",
         );
       }
     } catch (err) {
@@ -667,18 +1164,20 @@ export default function VideoStudio({
         const state = {
           imageMode,
           v2vMode,
+          selectedWorkflowId,
           selectedModel,
-          selectedModelName,
+          selectedFamilyId,
           selectedAr,
           selectedDuration,
           selectedResolution,
           selectedQuality,
-          selectedMode,
           selectedEffect,
-          uploadedImageUrl,
+          modelParameterValues,
           uploadedImageUrls,
-          uploadedVideoUrl,
-          uploadedVideoName,
+          uploadedEndImageUrl,
+          uploadedVideoUrls,
+          uploadedAudioUrls,
+          workflowMediaDrafts,
           prompt,
           localHistory,
         };
@@ -691,167 +1190,368 @@ export default function VideoStudio({
   }, [
     imageMode,
     v2vMode,
+    selectedWorkflowId,
     selectedModel,
-    selectedModelName,
+    selectedFamilyId,
     selectedAr,
     selectedDuration,
     selectedResolution,
     selectedQuality,
-    selectedMode,
     selectedEffect,
-    uploadedImageUrl,
+    modelParameterValues,
     uploadedImageUrls,
-    uploadedVideoUrl,
-    uploadedVideoName,
+    uploadedEndImageUrl,
+    uploadedVideoUrls,
+    uploadedAudioUrls,
+    workflowMediaDrafts,
     prompt,
     localHistory,
   ]);
 
   // ── Derived UI values ────────────────────────────────────────────────────
 
-  const applyImageReferenceUrl = useCallback(
-    (url) => {
-      if (!url) return;
+  const resolveMediaTarget = useCallback((mediaType) => {
+    const selection = selectionRef.current;
+    const family = videoModelCatalog.familyById.get(selection.selectedFamilyId);
+    const currentVariant = videoModelCatalog.variantById.get(selection.selectedModel);
+    const currentCapabilities = getModelMediaCapabilities(currentVariant?.model);
+    if (currentCapabilities[mediaType].maxItems > 0) {
+      return {
+        family,
+        mode: selection.v2vMode ? "v2v" : selection.imageMode ? "i2v" : "t2v",
+        variant: currentVariant,
+      };
+    }
 
-      setUploadedImageUrl(url);
+    // Families with explicit workflows never switch endpoints because a file
+    // was uploaded. The user chooses the workflow first.
+    if (getVideoWorkflowFamily(family?.id)) return null;
 
-      // Motion-control models use the image alongside the uploaded video.
-      if (isMotionControlSelection(selectedModel, v2vMode)) {
-        setUploadedImageUrls([url]);
-        setPromptDisabled(false);
+    const targetMode = mediaType === "image" ? "i2v" : mediaType === "video" ? "v2v" : null;
+    if (!targetMode || !family?.supports[targetMode]) return null;
+    const variant = getFamilyVariant(
+      videoModelCatalog,
+      family,
+      targetMode,
+      selection.selectedModel,
+    );
+    return variant ? { family, mode: targetMode, variant } : null;
+  }, []);
+
+  const applyReferenceUrls = useCallback(
+    (mediaType, urls, target = null, selectionAtStart = null) => {
+      const validUrls = urls.filter(Boolean);
+      if (validUrls.length === 0) return;
+      if (selectionAtStart && !isSameSelection(selectionAtStart, selectionRef.current)) {
+        toast.error(copy.errors.modelChangedDuringUpload);
+        return;
+      }
+      const resolvedTarget = target || resolveMediaTarget(mediaType);
+      if (!resolvedTarget) {
+        const family = videoModelCatalog.familyById.get(selectionRef.current.selectedFamilyId);
+        toast.error(copy.errors.modelDoesNotSupportReference.replace('{family}', family.name).replace('{mediaType}', mediaType));
         return;
       }
 
-      const currentT2V = t2vModels.find((model) => model.id === selectedModel);
-
-      // Models with native image inputs stay in their current mode.
-      if (currentT2V?.inputs?.images_list) {
-        const maxImages = currentT2V.inputs.images_list.maxItems || 8;
-        setUploadedImageUrls((previousUrls) => {
-          if (previousUrls.includes(url)) return previousUrls;
-          return [...previousUrls, url].slice(0, maxImages);
-        });
-        setPromptDisabled(false);
-        return;
+      const isCurrentVariant =
+        resolvedTarget.variant.model.id === selectionRef.current.selectedModel;
+      if (!isCurrentVariant) {
+        reconcileReferencesForModel(resolvedTarget.variant.model);
+        applySelectedVariant(
+          resolvedTarget.variant,
+          resolvedTarget.mode,
+          resolvedTarget.family,
+        );
       }
 
-      setUploadedVideoUrl(null);
-      setUploadedVideoName(null);
-      setV2vMode(false);
-
-      const sibling = currentT2V?.family
-        ? i2vModels.find((model) => model.family === currentT2V.family)
+      const activeWorkflowId = selectionRef.current.selectedWorkflowId;
+      const workflowConfig = activeWorkflowId
+        ? getVideoWorkflowMediaConfig(resolvedTarget.variant.model, activeWorkflowId)
         : null;
-      const targetModel = imageMode
-        ? i2vModels.find((model) => model.id === selectedModel)
-        : sibling || i2vModels[0];
-
-      if (!targetModel) return;
-
-      if (!imageMode) {
-        setImageMode(true);
-        setSelectedModel(targetModel.id);
-        setSelectedModelName(targetModel.name);
-        applyControlsForModel(targetModel.id, true, false);
-      }
-
-      const maxImages = getMaxImagesForI2VModel(targetModel.id);
-      if (maxImages > 2) {
-        setUploadedImageUrls((previousUrls) => {
-          if (previousUrls.includes(url)) return previousUrls;
-          return [...previousUrls, url].slice(0, maxImages);
-        });
-      } else {
-        setUploadedImageUrls([url]);
-      }
-      setPromptDisabled(false);
+      const limit = workflowConfig
+        ? mediaType === "image"
+          ? workflowConfig.imageLimit
+          : mediaType === "video"
+            ? workflowConfig.videoLimit
+            : workflowConfig.audioLimit
+        : getModelMediaCapabilities(resolvedTarget.variant.model)[mediaType].maxItems;
+      const setter = mediaType === "image"
+        ? setUploadedImageUrls
+        : mediaType === "video"
+          ? setUploadedVideoUrls
+          : setUploadedAudioUrls;
+      setter((current) => mergeReferenceUrls(current, validUrls, limit));
     },
-    [
-      applyControlsForModel,
-      imageMode,
-      isMotionControlSelection,
-      selectedModel,
-      v2vMode,
-    ],
+    [applySelectedVariant, reconcileReferencesForModel, resolveMediaTarget],
   );
 
   const handleDrawReference = useCallback(
     (entry) => {
-      applyImageReferenceUrl(entry?.url);
-    },
-    [applyImageReferenceUrl],
-  );
-
-  const uploadImageReference = useCallback(
-    async (file) => {
-      if (file.size > 10 * 1024 * 1024) {
-        alert("Image exceeds 10MB limit.");
+      if (!selectedWorkflowId) {
+        applyReferenceUrls("image", [entry?.url]);
         return;
       }
+      const slot = workflowMediaSlots.find((item) => {
+        return (
+          item.mediaType === "image" &&
+          item.acceptDrop !== false &&
+          getVideoWorkflowSlotRemaining(item, activeWorkflowMediaDraft) > 0
+        );
+      });
+      if (!slot || !workflowMediaDraftKey || !entry?.url) {
+        toast.error(copy.errors.sourceDoesNotAcceptImages);
+        return;
+      }
+      setWorkflowMediaDrafts((drafts) => {
+        const draft = drafts[workflowMediaDraftKey] || {};
+        const activeDraft = projectVideoWorkflowMedia(
+          selectedVariant?.model,
+          selectedWorkflowId,
+          draft,
+        );
+        return appendVideoWorkflowMedia(
+          drafts,
+          workflowMediaDraftKey,
+          slot,
+          [entry.url],
+          activeDraft,
+        );
+      });
+    },
+    [
+      activeWorkflowMediaDraft,
+      applyReferenceUrls,
+      selectedWorkflowId,
+      selectedVariant,
+      workflowMediaDraftKey,
+      workflowMediaSlots,
+    ],
+  );
 
-      setImageUploading(true);
-      setImageProgress(0);
+  const uploadFiles = useCallback(
+    async (files, { label, maxBytes, setUploading, setProgress }) => {
+      const selectedFiles = Array.from(files);
+      const tooLarge = selectedFiles.find((file) => file.size > maxBytes);
+      if (tooLarge) {
+        alert(copy.errors.labelExceedsLimit.replace('{label}', label).replace('{limit}', Math.round(maxBytes / 1024 / 1024)));
+        return [];
+      }
+      setUploading(true);
+      setProgress(0);
       try {
-        const url = await uploadFile(apiKey, file, setImageProgress);
-        applyImageReferenceUrl(url);
+        const progress = new Array(selectedFiles.length).fill(0);
+        return await Promise.all(
+          selectedFiles.map((file, index) =>
+            uploadFile(apiKey, file, (value) => {
+              progress[index] = value;
+              setProgress(
+                Math.round(progress.reduce((sum, item) => sum + item, 0) / progress.length),
+              );
+            }),
+          ),
+        );
       } catch (err) {
-        console.error("[VideoStudio] Image upload failed:", err);
-        alert(`Image upload failed: ${err.message}`);
+        console.error(`[VideoStudio] ${label} upload failed:`, err);
+        alert(copy.errors.labelUploadFailed.replace('{label}', label).replace('{message}', err.message));
+        return [];
       } finally {
-        setImageUploading(false);
-        setImageProgress(0);
+        setUploading(false);
+        setProgress(0);
       }
     },
-    [apiKey, applyImageReferenceUrl],
+    [apiKey],
   );
 
-  const processDroppedVideo = useCallback(
-    async (file) => {
-      if (file.size > 50 * 1024 * 1024) {
-        alert("Video exceeds 50MB limit.");
-        return;
-      }
-      setVideoUploading(true);
-      setVideoProgress(0);
+  const uploadWorkflowSlotFiles = useCallback(
+    async (draftKey, slot, files, context = null) => {
+      if (!draftKey || !slot || workflowUploadSlotRef.current) return;
+      const selectionAtStart = context?.selection || { ...selectionRef.current };
+      const targetModel = videoModelCatalog.variantById.get(
+        selectionAtStart.selectedModel,
+      )?.model;
+      const workflowIdAtStart = selectionAtStart.selectedWorkflowId;
+      const draftSession = context?.session ?? workflowDraftSessionRef.current;
+      const currentDraft = workflowMediaDraftsRef.current[draftKey] || {};
+      const activeDraft = projectVideoWorkflowMedia(
+        targetModel,
+        workflowIdAtStart,
+        currentDraft,
+      );
+      const remaining = getVideoWorkflowSlotRemaining(slot, activeDraft);
+      if (remaining === 0) return;
+
+      const selectedFiles = Array.from(files).slice(0, remaining);
+      if (selectedFiles.length === 0) return;
+      const options = slot.mediaType === "image"
+        ? { label: slot.label, maxBytes: 10 * 1024 * 1024, setUploading: setImageUploading, setProgress: setImageProgress }
+        : slot.mediaType === "video"
+          ? { label: slot.label, maxBytes: 50 * 1024 * 1024, setUploading: setVideoUploading, setProgress: setVideoProgress }
+          : { label: slot.label, maxBytes: 50 * 1024 * 1024, setUploading: setAudioUploading, setProgress: setAudioProgress };
+
+      const uploadKey = `${draftKey}:${slot.id}`;
+      workflowUploadSlotRef.current = uploadKey;
+      setWorkflowUploadSlotId(uploadKey);
       try {
-        const url = await uploadFile(apiKey, file, setVideoProgress);
-        setUploadedVideoUrl(url);
-        setUploadedVideoName(file.name);
-        if (imageMode) {
-          setUploadedImageUrl(null);
-          setImageMode(false);
+        const urls = await uploadFiles(selectedFiles, options);
+        if (
+          urls.length > 0 &&
+          draftSession === workflowDraftSessionRef.current
+        ) {
+          const latestDraft = workflowMediaDraftsRef.current[draftKey] || {};
+          const latestActiveDraft = projectVideoWorkflowMedia(
+            targetModel,
+            workflowIdAtStart,
+            latestDraft,
+          );
+          const nextDrafts = appendVideoWorkflowMedia(
+            workflowMediaDraftsRef.current,
+            draftKey,
+            slot,
+            urls,
+            latestActiveDraft,
+          );
+          workflowMediaDraftsRef.current = nextDrafts;
+          setWorkflowMediaDrafts(nextDrafts);
         }
-        setV2vMode(true);
-        const firstV2V = v2vModels[0];
-        setSelectedModel(firstV2V.id);
-        setSelectedModelName(firstV2V.name);
-        applyControlsForModel(firstV2V.id, false, true);
-        setPrompt("");
-        setPromptDisabled(true);
-      } catch (err) {
-        alert(`Video upload failed: ${err.message}`);
       } finally {
-        setVideoUploading(false);
-        setVideoProgress(0);
+        workflowUploadSlotRef.current = null;
+        setWorkflowUploadSlotId(null);
       }
     },
-    [apiKey, applyControlsForModel, imageMode],
+    [uploadFiles],
+  );
+
+  const uploadDroppedWorkflowFiles = useCallback(
+    async (files) => {
+      if (!workflowMediaDraftKey) return;
+      const dropSession = workflowDraftSessionRef.current;
+      const dropSelection = { ...selectionRef.current };
+      const dropModel = videoModelCatalog.variantById.get(
+        dropSelection.selectedModel,
+      )?.model;
+      const remainingFiles = Array.from(files);
+      for (const slot of workflowMediaSlots) {
+        if (dropSession !== workflowDraftSessionRef.current) break;
+        if (slot.acceptDrop === false) continue;
+        const matching = remainingFiles.filter((file) =>
+          file.type.startsWith(`${slot.mediaType}/`),
+        );
+        if (matching.length === 0) continue;
+        const currentDraft = workflowMediaDraftsRef.current[workflowMediaDraftKey] || {};
+        const activeDraft = projectVideoWorkflowMedia(
+          dropModel,
+          dropSelection.selectedWorkflowId,
+          currentDraft,
+        );
+        const capacity = getVideoWorkflowSlotRemaining(slot, activeDraft);
+        if (capacity === 0) continue;
+        const batch = matching.slice(0, capacity);
+        await uploadWorkflowSlotFiles(workflowMediaDraftKey, slot, batch, {
+          selection: dropSelection,
+          session: dropSession,
+        });
+        if (dropSession !== workflowDraftSessionRef.current) break;
+        for (const file of batch) {
+          const index = remainingFiles.indexOf(file);
+          if (index >= 0) remainingFiles.splice(index, 1);
+        }
+      }
+    },
+    [uploadWorkflowSlotFiles, workflowMediaDraftKey, workflowMediaSlots],
+  );
+
+  const removeWorkflowMedia = useCallback((slotId, index) => {
+    if (!workflowMediaDraftKey) return;
+    setWorkflowMediaDrafts((drafts) =>
+      removeVideoWorkflowMedia(
+        drafts,
+        workflowMediaDraftKey,
+        slotId,
+        index,
+      ),
+    );
+  }, [workflowMediaDraftKey]);
+
+  const uploadReferences = useCallback(
+    async (mediaType, files) => {
+      const selectionAtStart = { ...selectionRef.current };
+      const target = resolveMediaTarget(mediaType);
+      if (!target) {
+        const family = videoModelCatalog.familyById.get(selectionRef.current.selectedFamilyId);
+        toast.error(`${family.name} does not support ${mediaType} references.`);
+        return;
+      }
+      const capability = getModelMediaCapabilities(target.variant.model)[mediaType];
+      const workflowConfig = selectionAtStart.selectedWorkflowId
+        ? getVideoWorkflowMediaConfig(
+            target.variant.model,
+            selectionAtStart.selectedWorkflowId,
+          )
+        : null;
+      const currentUrls = mediaType === "image"
+        ? mediaRef.current.imageUrls
+        : mediaType === "video"
+          ? mediaRef.current.videoUrls
+          : mediaRef.current.audioUrls;
+      const configuredLimit = workflowConfig
+        ? mediaType === "image"
+          ? workflowConfig.imageLimit
+          : mediaType === "video"
+            ? workflowConfig.videoLimit
+            : workflowConfig.audioLimit
+        : capability.maxItems;
+      const mainLimit =
+        mediaType === "image" &&
+        (capability.separateLastItem || workflowConfig?.separateEndImage)
+          ? Math.min(configuredLimit, 1)
+          : configuredLimit;
+      const remaining = Math.max(mainLimit - currentUrls.length, 0);
+      if (remaining === 0) return;
+
+      const options = mediaType === "image"
+        ? { label: copy.media.image, maxBytes: 10 * 1024 * 1024, setUploading: setImageUploading, setProgress: setImageProgress }
+        : mediaType === "video"
+          ? { label: copy.media.video, maxBytes: 50 * 1024 * 1024, setUploading: setVideoUploading, setProgress: setVideoProgress }
+          : { label: copy.media.audio, maxBytes: 50 * 1024 * 1024, setUploading: setAudioUploading, setProgress: setAudioProgress };
+      const urls = await uploadFiles(Array.from(files).slice(0, remaining), options);
+      applyReferenceUrls(mediaType, urls, target, selectionAtStart);
+    },
+    [applyReferenceUrls, resolveMediaTarget, uploadFiles],
   );
 
   // ── Handle Dropped Files ────────────────────────────────────────────────
   useEffect(() => {
     if (droppedFiles && droppedFiles.length > 0) {
+      if (selectedWorkflowId) {
+        if (workflowUploadSlotRef.current) {
+          toast.error(copy.errors.waitForCurrentUpload);
+          onFilesHandled?.();
+          return;
+        }
+        void uploadDroppedWorkflowFiles(droppedFiles);
+        onFilesHandled?.();
+        return;
+      }
       const imageFiles = droppedFiles.filter(f => f.type.startsWith('image/'));
       const videoFiles = droppedFiles.filter(f => f.type.startsWith('video/'));
+      const audioFiles = droppedFiles.filter(f => f.type.startsWith('audio/'));
       
       if (videoFiles.length > 0) {
-        processDroppedVideo(videoFiles[0]);
+        uploadReferences("video", videoFiles);
       } else if (imageFiles.length > 0) {
-        uploadImageReference(imageFiles[0]);
+        uploadReferences("image", imageFiles);
+      } else if (audioFiles.length > 0) {
+        uploadReferences("audio", audioFiles);
       }
       onFilesHandled?.();
     }
-  }, [droppedFiles, onFilesHandled, processDroppedVideo, uploadImageReference]);
+  }, [
+    droppedFiles,
+    onFilesHandled,
+    selectedWorkflowId,
+    uploadDroppedWorkflowFiles,
+    uploadReferences,
+  ]);
 
   // Initialise controls for default model on mount
   useEffect(() => {
@@ -878,46 +1578,25 @@ export default function VideoStudio({
 
   // ── image upload ─────────────────────────────────────────────────────────
   const handleImageFileChange = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
     try {
-      await uploadImageReference(file);
+      await uploadReferences("image", files);
     } finally {
       if (imageFileInputRef.current) imageFileInputRef.current.value = "";
     }
-  };
-
-  const clearImageUpload = () => {
-    setUploadedImageUrl(null);
-    setUploadedImageUrls([]);
-    setUploadedEndImageUrl(null);
-    // Motion-control v2v or model with inputs.images_list: keep model, just drop the image
-    if (isMotionControlSelection(selectedModel, v2vMode)) return;
-    const currentT2V = t2vModels.find((m) => m.id === selectedModel);
-    if (currentT2V?.inputs?.images_list) return;
-    setImageMode(false);
-    const first = t2vModels[0];
-    setSelectedModel(first.id);
-    setSelectedModelName(first.name);
-    applyControlsForModel(first.id, false, false);
-    setPromptDisabled(false);
   };
 
   const removeImageAtIndex = (idx) => {
     const nextUrls = uploadedImageUrls.filter((_, i) => i !== idx);
     setUploadedImageUrls(nextUrls);
     if (nextUrls.length === 0) {
-      setUploadedImageUrl(null);
-      // Reset to text-to-video if empty list
+      if (workflowFamily) return;
       if (isMotionControlSelection(selectedModel, v2vMode)) return;
-      setImageMode(false);
-      const first = t2vModels[0];
-      setSelectedModel(first.id);
-      setSelectedModelName(first.name);
-      applyControlsForModel(first.id, false, false);
-      setPromptDisabled(false);
-    } else {
-      setUploadedImageUrl(nextUrls[0]);
+      if (currentFamilyMode === "t2v" && currentModelCapabilities.image.maxItems > 0) return;
+      const family = videoModelCatalog.familyById.get(selectedFamilyId);
+      const target = getFamilyVariant(videoModelCatalog, family, "t2v", selectedModel);
+      if (target) applyUserSelectedVariant(target, "t2v", family);
     }
   };
 
@@ -926,16 +1605,26 @@ export default function VideoStudio({
     const file = e.target.files[0];
     if (!file) return;
     if (file.size > 10 * 1024 * 1024) {
-      alert("Image exceeds 10MB limit.");
+      alert(copy.errors.imageExceeds10MB);
       return;
     }
     setEndImageUploading(true);
     setEndImageProgress(0);
+    const selectionAtStart = { ...selectionRef.current };
     try {
       const url = await uploadFile(apiKey, file, (pct) => {
         setEndImageProgress(pct);
       });
-      setUploadedEndImageUrl(url);
+      const latestModel = videoModelCatalog.variantById.get(
+        selectionRef.current.selectedModel,
+      )?.model;
+      if (
+        isSameSelection(selectionAtStart, selectionRef.current) &&
+        (selectionRef.current.selectedWorkflowId === "keyframes" ||
+          getModelMediaCapabilities(latestModel).image.separateLastItem)
+      ) {
+        setUploadedEndImageUrl(url);
+      }
     } catch (err) {
       alert(`End frame upload failed: ${err.message}`);
     } finally {
@@ -949,101 +1638,92 @@ export default function VideoStudio({
 
   // ── video upload ─────────────────────────────────────────────────────────
   const handleVideoFileChange = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    if (file.size > 50 * 1024 * 1024) {
-      alert("Video exceeds 50MB limit.");
-      return;
-    }
-    setVideoUploading(true);
-    setVideoProgress(0);
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
     try {
-      const url = await uploadFile(apiKey, file, (pct) => {
-        setVideoProgress(pct);
-      });
-      setUploadedVideoUrl(url);
-      setUploadedVideoName(file.name);
-
-      if (isMotionControlSelection(selectedModel, v2vMode)) {
-        // Already in motion-control mode — keep model and image, allow prompt
-        setPromptDisabled(false);
-      } else {
-        // Model-native video reference (e.g. Seedance 2.0 Extend with inputs.video_files):
-        // keep the current model & mode; just store the video URL as a reference
-        const currentT2VOrExtend = t2vModels.find((m) => m.id === selectedModel);
-        if (currentT2VOrExtend?.inputs?.video_files) {
-          setPromptDisabled(false);
-        } else {
-          // Default v2v flow (e.g. watermark remover) — auto-pick the first v2v model
-          if (imageMode) {
-            setUploadedImageUrl(null);
-            setImageMode(false);
-          }
-          setV2vMode(true);
-          const firstV2V = v2vModels[0];
-          setSelectedModel(firstV2V.id);
-          setSelectedModelName(firstV2V.name);
-          applyControlsForModel(firstV2V.id, false, true);
-          setPrompt("");
-          setPromptDisabled(true);
-        }
-      }
-    } catch (err) {
-      console.error("[VideoStudio] Video upload failed:", err);
-      alert(`Video upload failed: ${err.message}`);
+      await uploadReferences("video", files);
     } finally {
-      setVideoUploading(false);
-      setVideoProgress(0);
       if (videoFileInputRef.current) videoFileInputRef.current.value = "";
     }
   };
 
-  const clearVideoUpload = () => {
-    setUploadedVideoUrl(null);
-    setUploadedVideoName(null);
-    setV2vMode(false);
-    const first = t2vModels[0];
-    setSelectedModel(first.id);
-    setSelectedModelName(first.name);
-    applyControlsForModel(first.id, false, false);
-    setPromptDisabled(false);
+  const removeVideoAtIndex = (index) => {
+    const nextUrls = uploadedVideoUrls.filter((_, itemIndex) => itemIndex !== index);
+    setUploadedVideoUrls(nextUrls);
+    if (workflowFamily) return;
+    if (nextUrls.length > 0 || currentFamilyMode !== "v2v") return;
+    const family = videoModelCatalog.familyById.get(selectedFamilyId);
+    const target = getFamilyVariant(videoModelCatalog, family, "t2v", selectedModel);
+    if (target) applyUserSelectedVariant(target, "t2v", family);
+  };
+
+  const handleAudioFileChange = async (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+    try {
+      await uploadReferences("audio", files);
+    } finally {
+      if (audioFileInputRef.current) audioFileInputRef.current.value = "";
+    }
+  };
+
+  const removeAudioAtIndex = (index) => {
+    setUploadedAudioUrls((urls) => urls.filter((_, itemIndex) => itemIndex !== index));
   };
 
   // ── model selection from dropdown ─────────────────────────────────────────
   const handleModelSelect = useCallback(
-    (m, isV2V) => {
-      if (isV2V) {
-        setV2vMode(true);
-        setImageMode(false);
-        const isMC = !!m.imageField;
-        if (!isMC) {
-          // Single-input v2v (watermark remover etc.) — drop any image
-          setUploadedImageUrl(null);
-        }
-        setSelectedModel(m.id);
-        setSelectedModelName(m.name);
-        applyControlsForModel(m.id, false, true);
-        if (isMC) {
-          // Motion-control: prompt is editable, video+image are needed
-          setPromptDisabled(false);
-        } else {
-          setPrompt("");
-          setPromptDisabled(true);
-        }
-      } else {
-        if (v2vMode) {
-          setV2vMode(false);
-          setUploadedVideoUrl(null);
-          setUploadedVideoName(null);
-          setPromptDisabled(false);
-        }
-        setSelectedModel(m.id);
-        setSelectedModelName(m.name);
-        applyControlsForModel(m.id, imageMode, false);
+    (pickerEntry, category = "all") => {
+      const { family, variantsByMode, defaultVariant } = pickerEntry;
+      const target = category !== "all"
+        ? variantsByMode[category]
+        : variantsByMode[currentFamilyMode] || defaultVariant;
+      if (!target) return;
+
+      const targetWorkflowFamily = getVideoWorkflowFamily(family.id);
+      if (targetWorkflowFamily) {
+        const workflowId = targetWorkflowFamily.base.variantIds.has(target.model.id) ||
+          targetWorkflowFamily.unmanagedVariantIds.has(target.model.id)
+          ? null
+          : inferVideoWorkflowId(family.id, target.model.id);
+        applyUserSelectedVariant(target, target.mode, family, workflowId);
+        return;
       }
+
+      applyUserSelectedVariant(target, target.mode, family);
     },
-    [v2vMode, imageMode, applyControlsForModel],
+    [
+      applyUserSelectedVariant,
+      currentFamilyMode,
+    ],
   );
+
+  const handleWorkflowSelect = useCallback((workflowId) => {
+    const preferred = workflowVariantPreferencesRef.current.get(
+      workflowContextKey(selectedFamilyId, workflowId),
+    );
+    const target = resolveVideoWorkflowVariant(
+      selectedFamilyId,
+      workflowId,
+      selectedModel,
+      preferred,
+    );
+    if (target) {
+      applyUserSelectedVariant(target, target.mode, selectedFamily, workflowId);
+    }
+  }, [applyUserSelectedVariant, selectedFamily, selectedFamilyId, selectedModel]);
+
+  const clearWorkflow = useCallback(() => {
+    const preferred = workflowVariantPreferencesRef.current.get(
+      workflowContextKey(selectedFamilyId, null),
+    );
+    const target = resolveVideoBaseVariant(
+      selectedFamilyId,
+      selectedModel,
+      preferred,
+    );
+    if (target) applyUserSelectedVariant(target, target.mode, selectedFamily, null);
+  }, [applyUserSelectedVariant, selectedFamily, selectedFamilyId, selectedModel]);
 
   // ── add to local history ──────────────────────────────────────────────────
   const addToLocalHistory = useCallback((entry) => {
@@ -1062,44 +1742,67 @@ export default function VideoStudio({
   const handleGenerate = useCallback(async () => {
     const currentModel = getCurrentModel();
     const isExtendMode = currentModel?.requiresRequestId;
+    const capabilities = getModelMediaCapabilities(currentModel);
+    const requestSource = generationSources[selectedFamily.id];
     const trimmedPrompt = prompt.trim();
+    const workflowMedia = selectedWorkflowId
+      ? activeWorkflowMediaDraft || {}
+      : {
+          imageUrls: uploadedImageUrls,
+          endImageUrl: uploadedEndImageUrl,
+          videoUrls: uploadedVideoUrls,
+          audioUrls: uploadedAudioUrls,
+        };
 
-    if (v2vMode) {
+    if (!selectedWorkflowId && uploadedVideoUrls.length > 0 && capabilities.video.maxItems === 0) {
+      alert(`${selectedFamily.name} does not support video references.`);
+      return;
+    }
+    if (!selectedWorkflowId && uploadedImageUrls.length > 0 && capabilities.image.maxItems === 0) {
+      alert(`${selectedFamily.name} does not support image references.`);
+      return;
+    }
+    if (!selectedWorkflowId && uploadedAudioUrls.length > 0 && capabilities.audio.maxItems === 0) {
+      alert(`${selectedFamily.name} does not support audio references.`);
+      return;
+    }
+    if (currentModel?.promptRequired && !trimmedPrompt) {
+      alert(copy.errors.noPromptForModel);
+      return;
+    }
+
+    if (selectedWorkflowId) {
+      const validation = validateVideoWorkflowMedia(
+        selectedWorkflowId,
+        workflowMedia,
+        currentModel,
+      );
+      if (!validation.valid) {
+        alert(validation.message);
+        return;
+      }
+    } else if (v2vMode) {
       if (!uploadedVideoUrl) {
-        alert("Please upload a video first.");
+        alert(copy.errors.uploadVideoFirst);
         return;
       }
-      if (currentModel?.imageField && !uploadedImageUrl) {
-        alert("Please upload a reference image for motion control.");
-        return;
-      }
-      if (currentModel?.promptRequired && !trimmedPrompt) {
-        alert("Please describe the motion you want.");
+      if (currentModel?.imageField && !currentModel?.imageOptional && !uploadedImageUrl) {
+        alert(copy.errors.uploadReferenceImageForMotion);
         return;
       }
     } else if (isExtendMode) {
-      if (!lastGenerationId) {
-        alert(
-          "No Seedance 2.0 generation found to extend. Generate a video first.",
-        );
+      if (!requestSource?.requestId) {
+        alert(`No ${selectedFamily.name} generation found to continue.`);
         return;
       }
     } else if (imageMode) {
-      const maxImgs = getMaxImagesForI2VModel(selectedModel);
-      if (maxImgs > 2) {
-        if (uploadedImageUrls.length === 0) {
-          alert("Please upload at least one reference image first.");
-          return;
-        }
-      } else {
-        if (!uploadedImageUrl) {
-          alert("Please upload a start frame image first.");
-          return;
-        }
+      if (uploadedImageUrls.length === 0) {
+        alert(copy.errors.uploadAtLeastOneReferenceImage);
+        return;
       }
     } else {
       if (!trimmedPrompt) {
-        alert("Please enter a prompt to generate a video.");
+        alert(copy.errors.enterPromptToGenerate);
         return;
       }
     }
@@ -1108,30 +1811,31 @@ export default function VideoStudio({
     setGenerating(true);
     setGenerateError(null);
 
-    let hadError = false;
-
     try {
       let res;
+      const referenceParams = selectedWorkflowId
+        ? buildVideoWorkflowMediaParams(
+            currentModel,
+            selectedWorkflowId,
+            workflowMedia,
+          )
+        : buildReferenceParams(currentModel, workflowMedia);
 
       if (v2vMode) {
         // V2V: dedicated processV2V handles single-input tools (e.g. watermark
         // remover) and motion-control models (which take video + image + prompt)
         const v2vParams = {
           model: selectedModel,
-          video_url: uploadedVideoUrl,
+          ...buildSupplementalInputPayload(currentModel, modelParameterValues),
+          ...referenceParams,
         };
-        if (currentModel?.imageField && uploadedImageUrl) {
-          v2vParams.image_url = uploadedImageUrl;
-        }
         if (currentModel?.hasPrompt && trimmedPrompt) {
           v2vParams.prompt = trimmedPrompt;
         }
         res = await processV2V(apiKey, v2vParams);
-        if (!res?.url) throw new Error("No video URL returned by API");
+        if (!res?.url) throw new Error(copy.errors.noVideoUrlReturned);
 
         const genId = res.id || Date.now().toString();
-        setLastGenerationId(null);
-        setLastGenerationModel(null);
         const entry = {
           id: genId,
           url: res.url,
@@ -1149,38 +1853,27 @@ export default function VideoStudio({
             type: "video",
           });
       } else if (imageMode) {
-        const maxImgs = getMaxImagesForI2VModel(selectedModel);
-        const i2vParams = { model: selectedModel };
-        if (maxImgs > 2) {
-          i2vParams.images_list = uploadedImageUrls;
-        } else {
-          i2vParams.image_url = uploadedImageUrl;
-        }
+        const i2vParams = {
+          model: selectedModel,
+          ...buildSupplementalInputPayload(currentModel, modelParameterValues),
+          ...referenceParams,
+        };
         if (trimmedPrompt) i2vParams.prompt = trimmedPrompt;
         i2vParams.aspect_ratio = selectedAr;
-        const i2vModel = i2vModels.find((m) => m.id === selectedModel);
-        if (uploadedEndImageUrl && i2vModel?.lastImageField) {
-          i2vParams.last_image = uploadedEndImageUrl;
-        }
         const durations = getDurationsForI2VModel(selectedModel);
         if (durations.length > 0) i2vParams.duration = selectedDuration;
         const resolutions = getResolutionsForI2VModel(selectedModel);
         if (resolutions.length > 0) i2vParams.resolution = selectedResolution;
         if (selectedQuality) i2vParams.quality = selectedQuality;
-        if (selectedMode) i2vParams.mode = selectedMode;
         if (showEffect && selectedEffect) i2vParams.name = selectedEffect;
 
         res = await generateI2V(apiKey, i2vParams);
-        if (!res?.url) throw new Error("No video URL returned by API");
+        if (!res?.url) throw new Error(copy.errors.noVideoUrlReturned);
 
         const genId = res.id || Date.now().toString();
-        if (selectedModel === "seedance-v2.0-i2v") {
-          setLastGenerationId(genId);
-          setLastGenerationModel(selectedModel);
-        } else {
-          setLastGenerationId(null);
-          setLastGenerationModel(null);
-        }
+        setGenerationSources((sources) =>
+          recordGenerationSource(sources, selectedFamily.id, genId, selectedModel),
+        );
         const entry = {
           id: genId,
           url: res.url,
@@ -1201,19 +1894,15 @@ export default function VideoStudio({
           });
       } else {
         // T2V (including extend mode)
-        const params = { model: selectedModel };
+        const params = {
+          model: selectedModel,
+          ...buildSupplementalInputPayload(currentModel, modelParameterValues),
+          ...referenceParams,
+        };
         if (trimmedPrompt) params.prompt = trimmedPrompt;
 
         if (isExtendMode) {
-          params.request_id = lastGenerationId;
-          // Optional reference media for Seedance 2.0 Extend:
-          // images map to @image2…@image9 and videos map to @video1…@video3 in the prompt
-          if (uploadedImageUrls.length > 0) {
-            params.images_list = uploadedImageUrls;
-          }
-          if (uploadedVideoUrl) {
-            params.videos_list = [uploadedVideoUrl];
-          }
+          params.request_id = requestSource.requestId;
         } else {
           params.aspect_ratio = selectedAr;
         }
@@ -1223,22 +1912,14 @@ export default function VideoStudio({
         const resolutions = getResolutionsForVideoModel(selectedModel);
         if (resolutions.length > 0) params.resolution = selectedResolution;
         if (selectedQuality) params.quality = selectedQuality;
-        if (selectedMode) params.mode = selectedMode;
 
         res = await generateVideo(apiKey, params);
-        if (!res?.url) throw new Error("No video URL returned by API");
+        if (!res?.url) throw new Error(copy.errors.noVideoUrlReturned);
 
         const genId = res.id || Date.now().toString();
-        if (
-          selectedModel === "seedance-v2.0-t2v" ||
-          selectedModel === "seedance-v2.0-i2v"
-        ) {
-          setLastGenerationId(genId);
-          setLastGenerationModel(selectedModel);
-        } else {
-          setLastGenerationId(null);
-          setLastGenerationModel(null);
-        }
+        setGenerationSources((sources) =>
+          recordGenerationSource(sources, selectedFamily.id, genId, selectedModel),
+        );
         const entry = {
           id: genId,
           url: res.url,
@@ -1259,9 +1940,8 @@ export default function VideoStudio({
           });
       }
     } catch (e) {
-      hadError = true;
       console.error("[VideoStudio]", e);
-      const errMsg = formatErrorMessage(e, "Video generation failed");
+      const errMsg = formatErrorMessage(e, copy.errors.videoGenerationFailed);
       if (onGenerationError) onGenerationError(errMsg);
       else toast.error(errMsg);
     } finally {
@@ -1273,18 +1953,22 @@ export default function VideoStudio({
     prompt,
     v2vMode,
     imageMode,
+    selectedWorkflowId,
     selectedModel,
+    selectedFamily,
     selectedAr,
     selectedDuration,
     selectedResolution,
     selectedQuality,
-    selectedMode,
     selectedEffect,
+    modelParameterValues,
     showEffect,
-    uploadedImageUrl,
     uploadedImageUrls,
-    uploadedVideoUrl,
-    lastGenerationId,
+    uploadedEndImageUrl,
+    uploadedVideoUrls,
+    uploadedAudioUrls,
+    activeWorkflowMediaDraft,
+    generationSources,
     getCurrentModel,
     addToLocalHistory,
     showVideoInCanvas,
@@ -1302,54 +1986,190 @@ export default function VideoStudio({
   const handleNewPrompt = useCallback(() => {
     resetToPromptBar();
     setPrompt("");
-    setUploadedImageUrl(null);
     setUploadedImageUrls([]);
-    setImageMode(false);
-    setUploadedVideoUrl(null);
-    setUploadedVideoName(null);
-    setV2vMode(false);
+    setUploadedEndImageUrl(null);
+    setUploadedVideoUrls([]);
+    setUploadedAudioUrls([]);
+    workflowDraftSessionRef.current += 1;
+    setWorkflowMediaDrafts({});
     const first = t2vModels[0];
-    setSelectedModel(first.id);
-    setSelectedModelName(first.name);
-    applyControlsForModel(first.id, false, false);
-    setPromptDisabled(false);
+    const family = videoModelCatalog.familyByVariantId.get(first.id);
+    const variant = videoModelCatalog.variantById.get(first.id);
+    applyUserSelectedVariant(variant, "t2v", family);
     setTimeout(() => textareaRef.current?.focus(), 50);
-  }, [resetToPromptBar, applyControlsForModel]);
+  }, [applyUserSelectedVariant, resetToPromptBar]);
 
-  const handleExtend = useCallback(() => {
-    if (!lastGenerationId) return;
+  const handleExtend = useCallback((requestId, sourceModelId) => {
+    if (!requestId) return;
     resetToPromptBar();
     setPrompt("");
-    setUploadedImageUrl(null);
     setUploadedImageUrls([]);
-    setImageMode(false);
-    setSelectedModel("seedance-v2.0-extend");
-    setSelectedModelName("Seedance 2.0 Extend");
-    applyControlsForModel("seedance-v2.0-extend", false, false);
-    setPromptDisabled(false);
+    setUploadedEndImageUrl(null);
+    setUploadedVideoUrls([]);
+    setUploadedAudioUrls([]);
+    const family = videoModelCatalog.familyById.get("seedance-2");
+    const target = videoModelCatalog.variantById.get("seedance-2-extend");
+    setGenerationSources((sources) =>
+      recordGenerationSource(sources, family.id, requestId, sourceModelId),
+    );
+    applyUserSelectedVariant(target, "t2v", family);
     setTimeout(() => textareaRef.current?.focus(), 50);
-  }, [lastGenerationId, resetToPromptBar, applyControlsForModel]);
+  }, [applyUserSelectedVariant, resetToPromptBar]);
 
   // ── derived UI values ────────────────────────────────────────────────────
   const isSeedance2Canvas =
-    canvasModel === "seedance-v2.0-t2v" || canvasModel === "seedance-v2.0-i2v";
-  const currentModelObj = getCurrentModel();
+    videoModelCatalog.familyByVariantId.get(canvasModel)?.id === "seedance-2";
+  const currentModelObj = selectedVariant?.model;
   const isExtendMode = currentModelObj?.requiresRequestId;
-  const canUploadImageReference =
-    (!v2vMode || isMotionControlSelection(selectedModel, v2vMode)) &&
-    (!isExtendMode || currentModelObj?.inputs?.images_list);
+  const isMotionControlModel = isMotionControlSelection(selectedModel, v2vMode);
+  const workflowMediaConfig = selectedWorkflowId
+    ? getVideoWorkflowMediaConfig(currentModelObj, selectedWorkflowId)
+    : null;
+  const canUploadImageReference = workflowMediaConfig
+    ? workflowMediaConfig.imageLimit > 0
+    : workflowFamily
+      ? currentModelCapabilities.image.maxItems > 0
+    : currentModelCapabilities.image.maxItems > 0 ||
+      (!v2vMode && selectedFamily.supports.i2v);
+  const imageTargetVariant = workflowFamily
+    ? selectedVariant
+    : currentModelCapabilities.image.maxItems > 0
+      ? selectedVariant
+      : getFamilyVariant(videoModelCatalog, selectedFamily, "i2v", selectedModel);
+  const imageUploadCapability = getModelMediaCapabilities(imageTargetVariant?.model).image;
+  const imageUploadLimit = workflowMediaConfig
+    ? workflowMediaConfig.imageLimit
+    : imageUploadCapability.separateLastItem
+      ? 1
+      : imageUploadCapability.maxItems;
+  const videoTargetVariant = workflowFamily
+    ? selectedVariant
+    : currentModelCapabilities.video.maxItems > 0
+      ? selectedVariant
+      : getFamilyVariant(videoModelCatalog, selectedFamily, "v2v", selectedModel);
+  const videoUploadLimit = workflowMediaConfig
+    ? workflowMediaConfig.videoLimit
+    : getModelMediaCapabilities(videoTargetVariant?.model).video.maxItems;
+  const audioUploadLimit = workflowMediaConfig
+    ? workflowMediaConfig.audioLimit
+    : currentModelCapabilities.audio.maxItems;
+  const showEndImageUpload = workflowMediaConfig
+    ? workflowMediaConfig.separateEndImage
+    : imageUploadCapability.separateLastItem;
 
-  const promptPlaceholder = v2vMode
-    ? currentModelObj?.imageField
-      ? currentModelObj?.promptRequired
-        ? "Describe the motion"
-        : "Describe the motion (optional)"
-      : "Video ready — click Generate to remove watermark"
-    : imageMode
-      ? "Describe the motion or effect (optional)"
-      : isExtendMode
-        ? "Optional: describe how to continue the video..."
-        : "Describe the video you want to create";
+  const promptPlaceholder = selectedWorkflowId === "edit_video"
+    ? copy.placeholders.editVideo
+    : selectedWorkflowId === "extend_uploaded_video"
+      ? copy.placeholders.continueVideo
+      : selectedWorkflowId === "motion_transfer"
+        ? copy.placeholders.motion
+        : v2vMode
+          ? currentModelObj?.imageField
+            ? currentModelObj?.promptRequired
+              ? copy.placeholders.motion
+              : copy.placeholders.motionOptional
+            : copy.placeholders.videoReadyRemoveWatermark
+          : imageMode
+            ? currentModelObj?.promptRequired
+              ? copy.placeholders.motionOrEffect
+              : copy.placeholders.motionOrEffectOptional
+            : isExtendMode
+              ? copy.placeholders.optionalContinueVideo
+              : copy.placeholders.describeVideo;
+
+  const focusWorkflowMenuItem = useCallback((target = "selected") => {
+    const items = Array.from(
+      workflowMenuRef.current?.querySelectorAll(
+        '[role="menuitemradio"], [role="menuitem"]',
+      ) || [],
+    );
+    if (items.length === 0) return;
+
+    const item = target === "last"
+      ? items[items.length - 1]
+      : target === "first"
+        ? items[0]
+        : items.find((candidate) => candidate.getAttribute("aria-checked") === "true") ||
+          items[0];
+    item.focus();
+  }, []);
+
+  const closeWorkflowMenu = useCallback((restoreFocus = false) => {
+    setOpenDropdown(null);
+    if (restoreFocus) {
+      requestAnimationFrame(() => workflowTriggerRef.current?.focus());
+    }
+  }, []);
+
+  const handleWorkflowTriggerKeyDown = useCallback(
+    (event) => {
+      const focusTarget = event.key === "ArrowUp" || event.key === "End"
+        ? "last"
+        : event.key === "ArrowDown" || event.key === "Home"
+          ? "first"
+          : null;
+      if (!focusTarget) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (openDropdown === "workflow") {
+        focusWorkflowMenuItem(focusTarget);
+        return;
+      }
+      workflowMenuFocusTargetRef.current = focusTarget;
+      setOpenDropdown("workflow");
+    },
+    [focusWorkflowMenuItem, openDropdown],
+  );
+
+  const handleWorkflowMenuKeyDown = useCallback(
+    (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        closeWorkflowMenu(true);
+        return;
+      }
+      if (event.key === "Tab") {
+        setOpenDropdown(null);
+        return;
+      }
+      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+
+      const items = Array.from(
+        workflowMenuRef.current?.querySelectorAll(
+          '[role="menuitemradio"], [role="menuitem"]',
+        ) || [],
+      );
+      if (items.length === 0) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      const currentIndex = items.indexOf(document.activeElement);
+      const nextIndex = event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? items.length - 1
+          : event.key === "ArrowDown"
+            ? currentIndex < 0
+              ? 0
+              : (currentIndex + 1) % items.length
+            : currentIndex < 0
+              ? items.length - 1
+              : (currentIndex - 1 + items.length) % items.length;
+      items[nextIndex].focus();
+    },
+    [closeWorkflowMenu],
+  );
+
+  useEffect(() => {
+    if (openDropdown !== "workflow") return undefined;
+    const frame = requestAnimationFrame(() => {
+      focusWorkflowMenuItem(workflowMenuFocusTargetRef.current);
+      workflowMenuFocusTargetRef.current = "selected";
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focusWorkflowMenuItem, openDropdown, selectedWorkflowId]);
 
   const toggleDropdown = (type) => (e) => {
     e.stopPropagation();
@@ -1396,7 +2216,7 @@ export default function VideoStudio({
                     />
                     <button
                       type="button"
-                      title="Download"
+                      title={copy.gallery.download}
                       onClick={(e) => {
                         e.stopPropagation();
                         downloadFile(entry.url, `video-${entry.id || idx}.mp4`);
@@ -1410,11 +2230,10 @@ export default function VideoStudio({
                     {isSeedance2 && (
                       <button
                         type="button"
-                        title="Extend this video using Seedance 2.0 Extend"
+                        title={copy.gallery.extendSeedance}
                         onClick={(e) => {
                           e.stopPropagation();
-                          setLastGenerationId(entry.id);
-                          handleExtend();
+                          handleExtend(entry.id, entry.model);
                         }}
                         className="p-2 bg-black/60 backdrop-blur-md rounded-full text-white hover:bg-primary hover:text-black transition-all border border-white/10"
                       >
@@ -1425,11 +2244,13 @@ export default function VideoStudio({
                     )}
                     <button
                       type="button"
-                      title="Delete"
+                      title={copy.gallery.delete}
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (confirm("Are you sure you want to delete this generated item?")) {
-                          setLocalHistory(prev => prev.filter((_, i) => i !== idx));
+                        if (confirm(copy.gallery.confirmDelete)) {
+                          handleDeleteEntry(entry, idx).catch((err) => {
+                            onGenerationError?.(err.message || copy.errors.deleteItemFailed);
+                          });
                         }
                       }}
                       className="p-2 bg-black/60 backdrop-blur-md rounded-full text-red-400 hover:bg-red-500 hover:text-white transition-all border border-white/10"
@@ -1448,25 +2269,24 @@ export default function VideoStudio({
                     actions={[
                       {
                         kind: "download",
-                        label: "Download",
+                        label: copy.gallery.download,
                         onSelect: () =>
                           downloadFile(entry.url, `video-${entry.id || idx}.mp4`),
                       },
                       isSeedance2 && {
                         kind: "extend",
-                        label: "Extend",
-                        onSelect: () => {
-                          setLastGenerationId(entry.id);
-                          handleExtend();
-                        },
+                        label: copy.gallery.extend,
+                        onSelect: () => handleExtend(entry.id, entry.model),
                       },
                       {
                         kind: "delete",
-                        label: "Delete",
+                        label: copy.gallery.delete,
                         danger: true,
                         onSelect: () => {
-                          if (confirm("Are you sure you want to delete this generated item?")) {
-                            setLocalHistory((prev) => prev.filter((_, i) => i !== idx));
+                          if (confirm(copy.gallery.confirmDelete)) {
+                            handleDeleteEntry(entry, idx).catch((err) => {
+                              onGenerationError?.(err.message || copy.errors.deleteItemFailed);
+                            });
                           }
                         },
                       },
@@ -1476,12 +2296,12 @@ export default function VideoStudio({
                   {/* Prompt & Details */}
                   <div className="p-3 bg-black/80 backdrop-blur-sm border-t border-white/5 flex-1 flex flex-col justify-between gap-2">
                     <p className="text-white/70 text-xs line-clamp-3 leading-relaxed" title={entry.prompt}>
-                      {entry.prompt || "No prompt provided"}
+                      {entry.prompt || copy.gallery.noPromptProvided}
                     </p>
                     <div className="flex items-center justify-between mt-1 flex-wrap gap-1">
                       <div className="flex items-center gap-2">
                         <span className="text-[10px] font-bold text-primary px-2 py-0.5 bg-primary/10 rounded border border-primary/20 whitespace-nowrap capitalize">
-                          {entry.model?.replace("-", " ") || "Video Studio"}
+                          {entry.model?.replace("-", " ") || copy.gallery.fallbackTitle}
                         </span>
                         <div className="flex gap-2">
                           {entry.resolution && (
@@ -1505,41 +2325,41 @@ export default function VideoStudio({
               <div className="w-18 h-22 sm:w-24 sm:h-28 rounded-2xl border border-white/10 shadow-2xl -rotate-[12deg] transform hover:rotate-0 hover:scale-110 hover:z-20 transition-all duration-300 overflow-hidden bg-white/[0.01] flex-shrink-0">
                 <img
                   src="https://d3adwkbyhxyrtq.cloudfront.net/webassets/videomodels/sdxl-image.avif"
-                  alt="Creative asset 1"
+                  alt={copy.creativeAssets.asset1}
                   className="w-full h-full object-cover"
                 />
               </div>
               <div className="w-18 h-22 sm:w-24 sm:h-28 rounded-2xl border border-white/10 shadow-2xl -rotate-[4deg] transform hover:rotate-0 hover:scale-110 hover:z-20 transition-all duration-300 overflow-hidden bg-white/[0.01] -ml-3 sm:-ml-4 flex-shrink-0">
                 <img
                   src="https://d3adwkbyhxyrtq.cloudfront.net/webassets/videomodels/chroma-image.avif"
-                  alt="Creative asset 2"
+                  alt={copy.creativeAssets.asset2}
                   className="w-full h-full object-cover"
                 />
               </div>
               <div className="w-18 h-18 sm:w-24 sm:h-24 rounded-full border border-white/10 shadow-2xl rotate-[6deg] transform hover:rotate-0 hover:scale-110 hover:z-20 transition-all duration-300 overflow-hidden bg-white/[0.01] -ml-3 sm:-ml-4 flex-shrink-0">
                 <img
                   src="https://d3adwkbyhxyrtq.cloudfront.net/webassets/videomodels/neta-lumina.avif"
-                  alt="Creative asset 3"
+                  alt={copy.creativeAssets.asset3}
                   className="w-full h-full object-cover"
                 />
               </div>
               <div className="w-18 h-22 sm:w-24 sm:h-28 rounded-2xl border border-white/10 shadow-2xl rotate-[12deg] transform hover:rotate-0 hover:scale-110 hover:z-20 transition-all duration-300 overflow-hidden bg-white/[0.01] -ml-3 sm:-ml-4 flex-shrink-0">
                 <img
                   src="https://d3adwkbyhxyrtq.cloudfront.net/webassets/videomodels/perfect-pony-xl.avif"
-                  alt="Creative asset 4"
+                  alt={copy.creativeAssets.asset4}
                   className="w-full h-full object-cover"
                 />
               </div>
             </div>
 
             <h1 className="text-2xl sm:text-4xl md:text-5xl font-extrabold tracking-tight mb-4 text-center px-4 flex flex-col items-center">
-              <span className="text-white font-black uppercase text-xl sm:text-3xl tracking-wide mb-1 opacity-90">START CREATING WITH</span>
+              <span className="text-white font-black uppercase text-xl sm:text-3xl tracking-wide mb-1 opacity-90">{copy.empty.heading}</span>
               <span className="text-[#22d3ee] font-black uppercase text-2xl sm:text-4xl sm:mt-1 tracking-tight">
-                {selectedModelName}
+                {selectedFamily.name}
               </span>
             </h1>
             <p className="text-white/40 text-xs sm:text-sm font-medium tracking-wide text-center max-w-lg leading-relaxed px-4">
-              Animate images into stunning AI videos with motion effects
+              {copy.empty.subtitle}
             </p>
           </div>
         )}
@@ -1549,266 +2369,201 @@ export default function VideoStudio({
       <PromptComposer>
           <div className="flex flex-col gap-3">
             {/* Inline list of uploaded media files */}
-            <div className="flex items-center gap-2.5 flex-wrap">
-              {/* Main image preview */}
-              {uploadedImageUrl && (
-                <div className={PROMPT_MEDIA_PREVIEW_CLASS}>
-                  <img src={uploadedImageUrl} alt="" className="w-full h-full object-cover" />
-                  <button
-                    type="button"
-                    onClick={clearImageUpload}
-                    className="absolute top-0.5 right-0.5 w-4 h-4 bg-black/60 hover:bg-black rounded-full flex items-center justify-center text-white/85 hover:text-white text-[8px] border border-white/5"
-                  >
-                    ×
-                  </button>
-                </div>
-              )}
-
-              {/* End frame image preview */}
-              {uploadedEndImageUrl && (
-                <div className={PROMPT_MEDIA_PREVIEW_CLASS}>
-                  <img src={uploadedEndImageUrl} alt="" className="w-full h-full object-cover" />
-                  <button
-                    type="button"
-                    onClick={clearEndImage}
-                    className="absolute top-0.5 right-0.5 w-4 h-4 bg-black/60 hover:bg-black rounded-full flex items-center justify-center text-white/85 hover:text-white text-[8px] border border-white/5"
-                  >
-                    ×
-                  </button>
-                  <span className="absolute bottom-0.5 left-0.5 px-1 h-3.5 bg-black/60 rounded-md text-[7px] font-black text-[#22d3ee] leading-none flex items-center justify-center pointer-events-none">
-                    END
-                  </span>
-                </div>
-              )}
-
-              {/* Video preview */}
-              {uploadedVideoUrl && (
-                <div className={PROMPT_MEDIA_PREVIEW_CLASS}>
-                  <video src={uploadedVideoUrl} className="w-full h-full object-cover" muted />
-                  <button
-                    type="button"
-                    onClick={clearVideoUpload}
-                    className="absolute top-0.5 right-0.5 w-4 h-4 bg-black/60 hover:bg-black rounded-full flex items-center justify-center text-white/85 hover:text-white text-[8px] border border-white/5"
-                  >
-                    ×
-                  </button>
-                </div>
-              )}
-
-              {/* Multiple images layout if supported */}
-              {imageMode && getMaxImagesForI2VModel(selectedModel) > 2 && (
+            <div className="flex items-start gap-2.5 flex-wrap">
+              {selectedWorkflowId ? (
                 <>
-                  {uploadedImageUrls.map((url, idx) => (
-                    <div key={url} className={PROMPT_MEDIA_PREVIEW_CLASS}>
-                      <img src={url} alt="" className="w-full h-full object-cover" />
-                      <button
-                        type="button"
-                        onClick={() => removeImageAtIndex(idx)}
-                        className="absolute top-0.5 right-0.5 w-4 h-4 bg-black/60 hover:bg-black rounded-full flex items-center justify-center text-white/85 hover:text-white text-[8px] border border-white/5"
-                      >
-                        ×
-                      </button>
-                      <span className="absolute bottom-0.5 right-0.5 px-1 h-3.5 bg-black/60 rounded-full text-[8px] font-black text-[#22d3ee] leading-none flex items-center justify-center pointer-events-none">
-                        {idx + 1}
-                      </span>
-                    </div>
-                  ))}
+                  {workflowMediaSlots.flatMap((slot) => {
+                    const values = activeWorkflowMediaDraft?.[slot.id] || [];
+                    return values.map((url, index) => (
+                      <ReferencePreview
+                        copy={copy}
+                        key={`${slot.id}:${index}:${url}`}
+                        type={slot.mediaType}
+                        url={url}
+                        index={index}
+                        onRemove={(itemIndex) =>
+                          removeWorkflowMedia(slot.id, itemIndex)
+                        }
+                        label={
+                          values.length > 1
+                            ? `${slot.label} · ${index + 1}`
+                            : slot.label
+                        }
+                        description={
+                          values.length > 1
+                            ? `${slot.description} ${index + 1}`
+                            : slot.description
+                        }
+                      />
+                    ));
+                  })}
+
+                  {workflowMediaSlots.map((slot) => {
+                    const values = activeWorkflowMediaDraft?.[slot.id] || [];
+                    const remaining = getVideoWorkflowSlotRemaining(
+                      slot,
+                      activeWorkflowMediaDraft,
+                    );
+                    if (remaining <= 0) return null;
+                    const uploadKey = `${workflowMediaDraftKey}:${slot.id}`;
+                    const uploading = workflowUploadSlotId === uploadKey;
+                    const progress = slot.mediaType === "image"
+                      ? imageProgress
+                      : slot.mediaType === "video"
+                        ? videoProgress
+                        : audioProgress;
+                    return (
+                      <ReferenceUploadButton
+                  copy={copy}
+                        key={slot.id}
+                        accept={`${slot.mediaType}/*`}
+                        multiple={remaining > 1}
+                        onChange={async (event) => {
+                          const files = Array.from(event.target.files || []);
+                          event.target.value = "";
+                          await uploadWorkflowSlotFiles(
+                            workflowMediaDraftKey,
+                            slot,
+                            files,
+                          );
+                        }}
+                        title={`${slot.description || slot.label}${slot.required ? " (required)" : " (optional)"}`}
+                        uploading={uploading}
+                        progress={progress}
+                        type={slot.mediaType}
+                        label={slot.label}
+                        required={slot.required}
+                        disabled={Boolean(workflowUploadSlotId)}
+                      />
+                    );
+                  })}
                 </>
+              ) : (
+                <>
+              {uploadedImageUrls.map((url, index) => (
+                <ReferencePreview
+                        copy={copy}
+                  key={url}
+                  type="image"
+                  url={url}
+                  index={index}
+                  onRemove={removeImageAtIndex}
+                  label={
+                    uploadedImageUrls.length > 1
+                      ? `${copy.media.image} · ${index + 1}`
+                      : copy.media.image
+                  }
+                />
+              ))}
+
+              {uploadedEndImageUrl && (
+                <ReferencePreview
+                        copy={copy}
+                  type="image"
+                  url={uploadedEndImageUrl}
+                  index={0}
+                  onRemove={clearEndImage}
+                  label={copy.media.endFrame}
+                />
               )}
+
+              {uploadedVideoUrls.map((url, index) => (
+                <ReferencePreview
+                        copy={copy}
+                  key={url}
+                  type="video"
+                  url={url}
+                  index={index}
+                  onRemove={removeVideoAtIndex}
+                  label={
+                    uploadedVideoUrls.length > 1
+                      ? `${copy.media.video} · ${index + 1}`
+                      : copy.media.video
+                  }
+                />
+              ))}
+
+              {uploadedAudioUrls.map((url, index) => (
+                <ReferencePreview
+                        copy={copy}
+                  key={url}
+                  type="audio"
+                  url={url}
+                  index={index}
+                  onRemove={removeAudioAtIndex}
+                  label={
+                    uploadedAudioUrls.length > 1
+                      ? `${copy.media.audio} · ${index + 1}`
+                      : copy.media.audio
+                  }
+                />
+              ))}
 
               {/* Upload trigger buttons */}
-              {/* Image upload button — shown when the model accepts image input:
-                  • T2V mode: uploading an image auto-switches to the sibling I2V model
-                  • I2V mode: uploading the start-frame (multi-image logic applies)
-                  • V2V motion-control: reference image is required alongside the video
-                  • T2V with inputs.images_list: optional reference images (e.g. Seedance 2.0 Extend)
-                  • Hidden in regular V2V mode (watermark remover etc. needs no image)
-                  • Hidden for extend-type models without inputs.images_list */}
-              {canUploadImageReference && (
-                getMaxImagesForI2VModel(selectedModel) > 2 ? (
-                  uploadedImageUrls.length < getMaxImagesForI2VModel(selectedModel) && (
-                    <div className="relative">
-                      <input
-                        ref={imageFileInputRef}
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={handleImageFileChange}
-                      />
-                      <button
-                        type="button"
-                        title="Upload reference image"
-                        onClick={() => imageFileInputRef.current?.click()}
-                        className={promptMediaButtonClassName()}
-                      >
-                        {imageUploading ? (
-                          <div className="flex flex-col items-center justify-center w-full h-full absolute inset-0 bg-black/80 z-20 backdrop-blur-[2px]">
-                            <svg className="w-8 h-8 -rotate-90">
-                              <circle cx="16" cy="16" r="14" stroke="currentColor" strokeWidth="2" fill="transparent" className="text-white/10" />
-                              <circle
-                                cx="16"
-                                cy="16"
-                                r="14"
-                                stroke="currentColor"
-                                strokeWidth="2"
-                                fill="transparent"
-                                strokeDasharray={88}
-                                strokeDashoffset={88 - (88 * imageProgress) / 100}
-                                className="text-[#22d3ee] transition-all duration-300"
-                              />
-                            </svg>
-                            <span className="absolute text-[9px] font-black text-[#22d3ee] leading-none">{imageProgress}%</span>
-                          </div>
-                        ) : (
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-white/40 group-hover:text-[#22d3ee] transition-colors">
-                            <line x1="12" y1="5" x2="12" y2="19" />
-                            <line x1="5" y1="12" x2="19" y2="12" />
-                          </svg>
-                        )}
-                      </button>
-                    </div>
-                  )
-                ) : (
-                  !uploadedImageUrl && (
-                    <div className="relative">
-                      <input
-                        ref={imageFileInputRef}
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={handleImageFileChange}
-                      />
-                      <button
-                        type="button"
-                        title="Upload reference image"
-                        onClick={() => imageFileInputRef.current?.click()}
-                        className={promptMediaButtonClassName()}
-                      >
-                        {imageUploading ? (
-                          <div className="flex flex-col items-center justify-center w-full h-full absolute inset-0 bg-black/80 z-20 backdrop-blur-[2px]">
-                            <svg className="w-8 h-8 -rotate-90">
-                              <circle cx="16" cy="16" r="14" stroke="currentColor" strokeWidth="2" fill="transparent" className="text-white/10" />
-                              <circle
-                                cx="16"
-                                cy="16"
-                                r="14"
-                                stroke="currentColor"
-                                strokeWidth="2"
-                                fill="transparent"
-                                strokeDasharray={88}
-                                strokeDashoffset={88 - (88 * imageProgress) / 100}
-                                className="text-[#22d3ee] transition-all duration-300"
-                              />
-                            </svg>
-                            <span className="absolute text-[9px] font-black text-[#22d3ee] leading-none">{imageProgress}%</span>
-                          </div>
-                        ) : (
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-white/40 group-hover:text-[#22d3ee] transition-colors">
-                            <line x1="12" y1="5" x2="12" y2="19" />
-                            <line x1="5" y1="12" x2="19" y2="12" />
-                          </svg>
-                        )}
-                      </button>
-                    </div>
-                  )
-                )
+              {canUploadImageReference && uploadedImageUrls.length < imageUploadLimit && (
+                <ReferenceUploadButton
+                  copy={copy}
+                  inputRef={imageFileInputRef}
+                  accept="image/*"
+                  multiple={imageUploadLimit - uploadedImageUrls.length > 1}
+                  onChange={handleImageFileChange}
+                  onClick={() => imageFileInputRef.current?.click()}
+                  title={
+                    selectedWorkflowId === "keyframes"
+                      ? copy.upload.uploadStartFrame
+                      : copy.upload.uploadUpToReferenceImages.replace('{count}', imageUploadLimit)
+                  }
+                  uploading={imageUploading}
+                  progress={imageProgress}
+                  type="image"
+                />
               )}
 
-              {/* End frame image button */}
-              {imageMode && i2vModels.find((m) => m.id === selectedModel)?.lastImageField && !uploadedEndImageUrl && (
-                <div className="relative">
-                  <input
-                    ref={endImageFileInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={handleEndImageFileChange}
-                  />
-                  <button
-                    type="button"
-                    title="Upload end frame (optional)"
-                    onClick={() => endImageFileInputRef.current?.click()}
-                    className={promptMediaButtonClassName()}
-                  >
-                    {endImageUploading ? (
-                      <div className="flex flex-col items-center justify-center w-full h-full absolute inset-0 bg-black/80 z-20 backdrop-blur-[2px]">
-                        <svg className="w-8 h-8 -rotate-90">
-                          <circle cx="16" cy="16" r="14" stroke="currentColor" strokeWidth="2" fill="transparent" className="text-white/10" />
-                          <circle
-                            cx="16"
-                            cy="16"
-                            r="14"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            fill="transparent"
-                            strokeDasharray={88}
-                            strokeDashoffset={88 - (88 * endImageProgress) / 100}
-                            className="text-[#22d3ee] transition-all duration-300"
-                          />
-                        </svg>
-                        <span className="absolute text-[9px] font-black text-[#22d3ee] leading-none">{endImageProgress}%</span>
-                      </div>
-                    ) : (
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-white/40 group-hover:text-[#22d3ee] transition-colors">
-                        <line x1="12" y1="5" x2="12" y2="19" />
-                        <line x1="5" y1="12" x2="19" y2="12" />
-                      </svg>
-                    )}
-                  </button>
-                </div>
+              {showEndImageUpload && !uploadedEndImageUrl && (
+                <ReferenceUploadButton
+                  copy={copy}
+                  inputRef={endImageFileInputRef}
+                  accept="image/*"
+                  multiple={false}
+                  onChange={handleEndImageFileChange}
+                  onClick={() => endImageFileInputRef.current?.click()}
+                  title={copy.upload.uploadEndFrame}
+                  uploading={endImageUploading}
+                  progress={endImageProgress}
+                  type="image"
+                />
               )}
 
-              {/* Video upload button — shown when a V2V model is active, OR when
-                  the current model has inputs.video_files (e.g. Seedance 2.0 Extend). */}
-              {!uploadedVideoUrl && (v2vMode || currentModelObj?.inputs?.video_files) && (
-                <div className="relative">
-                  <input
-                    ref={videoFileInputRef}
-                    type="file"
-                    accept="video/*"
-                    className="hidden"
-                    onChange={handleVideoFileChange}
-                  />
-                  <button
-                    type="button"
-                    title="Upload video to remove watermark"
-                    onClick={() => videoFileInputRef.current?.click()}
-                    className={promptMediaButtonClassName()}
-                  >
-                    {videoUploading ? (
-                      <div className="flex flex-col items-center justify-center w-full h-full absolute inset-0 bg-black/80 z-20 backdrop-blur-[2px]">
-                        <svg className="w-8 h-8 -rotate-90">
-                          <circle cx="16" cy="16" r="14" stroke="currentColor" strokeWidth="2" fill="transparent" className="text-white/10" />
-                          <circle
-                            cx="16"
-                            cy="16"
-                            r="14"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            fill="transparent"
-                            strokeDasharray={88}
-                            strokeDashoffset={88 - (88 * videoProgress) / 100}
-                            className="text-[#22d3ee] transition-all duration-300"
-                          />
-                        </svg>
-                        <span className="absolute text-[9px] font-black text-[#22d3ee] leading-none">{videoProgress}%</span>
-                      </div>
-                    ) : (
-                      <svg
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2.5"
-                        className="text-white/40 group-hover:text-[#22d3ee] transition-colors"
-                      >
-                        <polygon points="23 7 16 12 23 17 23 7" fill="currentColor" />
-                        <rect x="1" y="5" width="15" height="14" rx="2" ry="2" fill="currentColor" />
-                      </svg>
-                    )}
-                  </button>
-                </div>
+              {videoUploadLimit > 0 && uploadedVideoUrls.length < videoUploadLimit && (
+                <ReferenceUploadButton
+                  copy={copy}
+                  inputRef={videoFileInputRef}
+                  accept="video/*"
+                  multiple={videoUploadLimit - uploadedVideoUrls.length > 1}
+                  onChange={handleVideoFileChange}
+                  onClick={() => videoFileInputRef.current?.click()}
+                  title={`Upload up to ${videoUploadLimit} reference videos`}
+                  uploading={videoUploading}
+                  progress={videoProgress}
+                  type="video"
+                />
+              )}
+
+              {audioUploadLimit > 0 && uploadedAudioUrls.length < audioUploadLimit && (
+                <ReferenceUploadButton
+                  copy={copy}
+                  inputRef={audioFileInputRef}
+                  accept="audio/*"
+                  multiple={audioUploadLimit - uploadedAudioUrls.length > 1}
+                  onChange={handleAudioFileChange}
+                  onClick={() => audioFileInputRef.current?.click()}
+                  title={`Upload up to ${audioUploadLimit} reference audio files`}
+                  uploading={audioUploading}
+                  progress={audioProgress}
+                  type="audio"
+                />
+              )}
+                </>
               )}
             </div>
 
@@ -1837,7 +2592,7 @@ export default function VideoStudio({
               >
                 <path d="M5 12h14M12 5l7 7-7 7" />
               </svg>
-              <span>Extending previous Seedance 2.0 generation</span>
+              <span>{copy.extend.continuingGeneration.replace('{family}', selectedFamily.name)}</span>
             </div>
           )}
 
@@ -1855,9 +2610,7 @@ export default function VideoStudio({
                 >
                   <div className="w-4 h-4 rounded overflow-hidden shrink-0 flex items-center justify-center bg-white/5">
                     {(() => {
-                      const allCurrentModels = [...t2vModels, ...i2vModels, ...v2vModels];
-                      const selectedModelObj = allCurrentModels.find(m => m.id === selectedModel);
-                      const selectedModelProvider = selectedModelObj?.provider || 'muapi';
+                      const selectedModelProvider = selectedFamily.provider || 'muapi';
                       return PROVIDER_LOGOS[selectedModelProvider] ? (
                         <img 
                           src={PROVIDER_LOGOS[selectedModelProvider]} 
@@ -1868,9 +2621,9 @@ export default function VideoStudio({
                         <span className="text-[9px] font-bold text-black uppercase">V</span>
                       );
                     })()}
-                  </div>
+                </div>
                 <span className={PROMPT_CONTROL_LABEL_CLASS}>
-                    {selectedModelName}
+                    {selectedPickerEntry?.name || selectedFamily.name}
                   </span>
                   <PromptChevronIcon />
                 </button>
@@ -1879,9 +2632,8 @@ export default function VideoStudio({
                     onClick={(e) => e.stopPropagation()}
                     className="w-[calc(100vw-2rem)] md:w-[480px] max-w-md md:max-w-none max-h-[70vh]"
                   >
-                    <PromptPopoverHeader>Model</PromptPopoverHeader>
+                    <PromptPopoverHeader>{copy.dropdowns.model}</PromptPopoverHeader>
                     <ModelDropdown
-                      imageMode={imageMode}
                       selectedModel={selectedModel}
                       onSelect={handleModelSelect}
                       onClose={() => setOpenDropdown(null)}
@@ -1889,6 +2641,136 @@ export default function VideoStudio({
                   </PromptPopover>
                 )}
               </div>
+
+              {workflowControlState.kind !== "hidden" && (
+                <div className="relative flex items-center gap-1">
+                  <button
+                    type="button"
+                    ref={workflowTriggerRef}
+                    id={workflowControlId}
+                    aria-haspopup={
+                      workflowControlState.kind === "menu" ? "menu" : undefined
+                    }
+                    aria-controls={
+                      workflowControlState.kind === "menu" ? workflowMenuId : undefined
+                    }
+                    aria-expanded={
+                      workflowControlState.kind === "menu"
+                        ? openDropdown === "workflow"
+                        : undefined
+                    }
+                    aria-pressed={
+                      workflowControlState.kind === "direct"
+                        ? Boolean(selectedWorkflowId)
+                        : undefined
+                    }
+                    onClick={(event) => {
+                      if (workflowControlState.kind === "direct") {
+                        event.stopPropagation();
+                        if (selectedWorkflowId) {
+                          clearWorkflow();
+                        } else if (workflowControlState.workflow) {
+                          handleWorkflowSelect(workflowControlState.workflow.id);
+                        }
+                        setOpenDropdown(null);
+                        return;
+                      }
+                      event.stopPropagation();
+                      if (openDropdown === "workflow") {
+                        setOpenDropdown(null);
+                        return;
+                      }
+                      workflowMenuFocusTargetRef.current = "selected";
+                      setOpenDropdown("workflow");
+                    }}
+                    onKeyDown={
+                      workflowControlState.kind === "menu"
+                        ? handleWorkflowTriggerKeyDown
+                        : undefined
+                    }
+                    className={promptControlClassName({
+                      active: openDropdown === "workflow",
+                    })}
+                  >
+                    <span className={PROMPT_CONTROL_LABEL_CLASS}>
+                      {getVideoWorkflowControlLabel(selectedWorkflow)}
+                    </span>
+                    {workflowControlState.kind === "menu" && <PromptChevronIcon />}
+                  </button>
+                  {workflowControlState.kind === "menu" && openDropdown === "workflow" && (
+                    <PromptPopover
+                      className="min-w-[210px]"
+                      style={{ maxHeight: "55vh" }}
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <PromptPopoverHeader>{copy.dropdowns.source}</PromptPopoverHeader>
+                      <div
+                        ref={workflowMenuRef}
+                        id={workflowMenuId}
+                        role="menu"
+                        aria-labelledby={workflowControlId}
+                        onKeyDown={handleWorkflowMenuKeyDown}
+                        className="flex flex-col gap-1"
+                      >
+                        {workflowFamily.workflows.map((workflow) => (
+                          <PromptMenuItem
+                            key={workflow.id}
+                            selected={selectedWorkflowId === workflow.id}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              handleWorkflowSelect(workflow.id);
+                              closeWorkflowMenu(true);
+                            }}
+                          >
+                            {workflow.label}
+                          </PromptMenuItem>
+                        ))}
+                        {selectedWorkflow && workflowFamily?.hasBase && (
+                          <div className="mt-2 border-t border-white/[0.05] pt-2">
+                            <button
+                              type="button"
+                              role="menuitemradio"
+                              aria-checked={false}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                clearWorkflow();
+                                closeWorkflowMenu(true);
+                              }}
+                              className="flex min-h-9 w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-[11px] font-semibold text-white/40 transition-colors hover:bg-white/[0.04] hover:text-white/70 focus:outline-none focus-visible:bg-white/[0.04] focus-visible:text-white/70"
+                            >
+                              <svg
+                                width="13"
+                                height="13"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                aria-hidden="true"
+                              >
+                                <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+                                <path d="M3 3v5h5" />
+                              </svg>
+                              <span>{copy.dropdowns.baseGeneration}</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </PromptPopover>
+                  )}
+                </div>
+              )}
+
+              <ModelParameterControls
+                inputs={supplementalInputs}
+                values={modelParameterValues}
+                onChange={(key, value) =>
+                  setModelParameterValues((values) => ({ ...values, [key]: value }))
+                }
+                open={openDropdown === "parameters"}
+                onToggle={toggleDropdown("parameters")}
+              />
 
               {/* Aspect ratio btn */}
               {showAr && (
@@ -1910,7 +2792,7 @@ export default function VideoStudio({
                       onClick={(e) => e.stopPropagation()}
                     >
                       <PromptPopoverHeader>
-                        Aspect Ratio
+                        {copy.dropdowns.aspectRatio}
                       </PromptPopoverHeader>
                       <PromptMenuList>
                         {getCurrentAspectRatios(selectedModel).map((r) => (
@@ -1954,7 +2836,7 @@ export default function VideoStudio({
                       <path d="M5 3l14 9-14 9V3z" />
                     </svg>
                     <span className={`${PROMPT_CONTROL_LABEL_CLASS} max-w-[140px] truncate`}>
-                      {selectedEffect || "Effect"}
+                      {selectedEffect || copy.dropdowns.effect}
                     </span>
                   </button>
                   {openDropdown === "effect" && (
@@ -1963,7 +2845,7 @@ export default function VideoStudio({
                       className="min-w-[200px]"
                     >
                       <PromptPopoverHeader>
-                        Effect Type
+                        {copy.dropdowns.effectType}
                       </PromptPopoverHeader>
                       <PromptMenuList>
                         {getEffectsForI2VModel(selectedModel).map((eff) => (
@@ -2005,7 +2887,7 @@ export default function VideoStudio({
                       onClick={(e) => e.stopPropagation()}
                     >
                       <PromptPopoverHeader>
-                        Duration
+                        {copy.dropdowns.duration}
                       </PromptPopoverHeader>
                       <PromptMenuList>
                         {getCurrentDurations(selectedModel).map((d) => (
@@ -2047,7 +2929,7 @@ export default function VideoStudio({
                       onClick={(e) => e.stopPropagation()}
                     >
                       <PromptPopoverHeader>
-                        Resolution
+                        {copy.dropdowns.resolution}
                       </PromptPopoverHeader>
                       <PromptMenuList>
                         {getCurrentResolutions(selectedModel).map((r) => (
@@ -2087,7 +2969,7 @@ export default function VideoStudio({
                     <path d="M12 20h9" />
                     <path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z" />
                   </svg>
-                  <span className={PROMPT_CONTROL_LABEL_CLASS}>Draw</span>
+                  <span className={PROMPT_CONTROL_LABEL_CLASS}>{copy.controls.draw}</span>
                 </button>
               )}
             </PromptControls>
@@ -2102,11 +2984,11 @@ export default function VideoStudio({
                   <span className="animate-spin inline-block text-black">
                     ◌
                   </span>{" "}
-                  Generating...
+                  {copy.controls.generating}
                 </>
               ) : (
                 <>
-                  <span>Generate</span>
+                  <span>{copy.controls.generate}</span>
                 </>
               )}
             </PromptAction>

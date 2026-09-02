@@ -6,12 +6,12 @@ import { generateImage, generateI2I, uploadFile } from "../muapi.js";
 import { formatErrorMessage } from "../utils/formatError.js";
 import { scopedPersistKey, migrateLegacyPersistKey } from "../persistKey.js";
 import DrawModal from "./DrawModal.jsx";
+import ModelParameterControls from "./ModelParameterControls.jsx";
 import MobileGenerationActions, {
   GenerationCopyButtons,
 } from "./MobileGenerationActions.jsx";
 import {
   t2iModels,
-  i2iModels,
   getAspectRatiosForModel,
   getResolutionsForModel,
   getQualityFieldForModel,
@@ -23,6 +23,22 @@ import {
   getDefaultEffectForI2IModel,
   getI2IModelById,
 } from "../models.js";
+import {
+  getFamilyVariant,
+  getImageReferenceVariant,
+  imageModelCatalog,
+  imageModelPickerEntries,
+  imageModelPickerEntryByVariantId,
+} from "../modelFamilies.js";
+import {
+  buildReferenceParams,
+  getModelMediaCapabilities,
+} from "../modelCapabilities.js";
+import {
+  buildSupplementalInputPayload,
+  createModelParameterValues,
+  getSupplementalModelInputs,
+} from "../modelParameters.js";
 import {
   PROMPT_CONTROL_LABEL_CLASS,
   PROMPT_MEDIA_PREVIEW_CLASS,
@@ -41,6 +57,9 @@ import {
   promptControlClassName,
   promptMediaButtonClassName,
 } from "./prompt/PromptComposer.jsx";
+import en from "../messages/en/imageStudio.json";
+import zh from "../messages/zh/imageStudio.json";
+import { resolveCopy } from "../i18nUtils";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -63,11 +82,14 @@ async function downloadImage(url, filename) {
 
 // ─── UploadButton (inline picker) ───────────────────────────────────────────
 
-function UploadButton({ apiKey, maxImages, onSelect, onClear, initialUrls = [], label = null, persistedHistory = null, onHistoryChange = null }) {
+function UploadButton({ apiKey, maxImages, onSelect, onClear, initialUrls = [], label = null, persistedHistory = null, onHistoryChange = null, copy }) {
+  const t = copy.uploadButton;
   const [panelOpen, setPanelOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [selectedEntries, setSelectedEntries] = useState([]); // [{url, thumbnail}]
   const [uploadHistory, setUploadHistory] = useState(persistedHistory || []); // [{id, name, url, thumbnail}]
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
 
   // Notify parent whenever uploadHistory changes (for localStorage persistence)
   const onHistoryChangeRef = useRef(onHistoryChange);
@@ -89,6 +111,8 @@ function UploadButton({ apiKey, maxImages, onSelect, onClear, initialUrls = [], 
   }, [persistedHistory]);
   
   const [lastUploadProgress, setLastUploadProgress] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragCounterRef = useRef(0);
   const fileInputRef = useRef(null);
   const panelRef = useRef(null);
   const triggerRef = useRef(null);
@@ -112,24 +136,29 @@ function UploadButton({ apiKey, maxImages, onSelect, onClear, initialUrls = [], 
 
   // Sync initialUrls from parent (e.g. restored from localStorage)
   useEffect(() => {
-    if (initialUrls && initialUrls.length > 0) {
-      // Avoid infinite loops by only updating if URLs actually changed
-      const currentUrls = selectedEntries.map(e => e.url);
-      const isSame = initialUrls.length === currentUrls.length && initialUrls.every(u => currentUrls.includes(u));
-      if (isSame) return;
+    const nextUrls = initialUrls || [];
+    const currentUrls = selectedEntries.map((entry) => entry.url);
+    const isSame =
+      nextUrls.length === currentUrls.length &&
+      nextUrls.every((url, index) => url === currentUrls[index]);
+    if (isSame) return;
 
-      const newEntries = initialUrls.map(url => ({ url }));
-      setSelectedEntries(newEntries);
-      
-      // Also ensure they are in the history panel
-      setUploadHistory(prev => {
-        const existingUrls = prev.map(h => h.url);
-        const missing = initialUrls
-          .filter(u => !existingUrls.includes(u))
-          .map(u => ({ id: `restored-${u}`, name: "Restored Image", url: u, progress: 100 }));
-        return [...missing, ...prev];
-      });
-    }
+    setSelectedEntries(nextUrls.map((url) => ({ url })));
+    if (nextUrls.length === 0) return;
+
+    // Also ensure restored selections are available in the history panel.
+    setUploadHistory((history) => {
+      const existingUrls = new Set(history.map((entry) => entry.url));
+      const missing = nextUrls
+        .filter((url) => !existingUrls.has(url))
+        .map((url) => ({
+          id: `restored-${url}`,
+          name: "Restored Image",
+          url,
+          progress: 100,
+        }));
+      return missing.length > 0 ? [...missing, ...history] : history;
+    });
   }, [initialUrls]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // When maxImages changes, trim excess selections
@@ -148,21 +177,25 @@ function UploadButton({ apiKey, maxImages, onSelect, onClear, initialUrls = [], 
     (entries) => {
       if (!entries.length) return;
       const urls = entries.map((e) => e.url);
-      onSelect({ url: urls[0], urls, thumbnail: entries[0].url });
+      onSelectRef.current?.({ url: urls[0], urls, thumbnail: entries[0].url });
     },
-    [onSelect],
+    [],
   );
 
   const handleFileChange = async (e) => {
     const files = Array.from(e.target.files);
-    if (!files.length) return;
     e.target.value = "";
+    await processFiles(files);
+  };
+
+  const processFiles = async (files) => {
+    if (!files.length) return;
 
     const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
     const tooLarge = files.filter((f) => f.size > MAX_IMAGE_SIZE);
     if (tooLarge.length > 0) {
       alert(
-        `The following images are too large (max 10MB): ${tooLarge.map((f) => f.name).join(", ")}`,
+        t.tooLargeAlert.replace("{names}", tooLarge.map((f) => f.name).join(", ")),
       );
       return;
     }
@@ -218,10 +251,47 @@ function UploadButton({ apiKey, maxImages, onSelect, onClear, initialUrls = [], 
         }),
       );
     } catch (err) {
-      alert(`Image upload failed: ${err.message}`);
+      alert(t.uploadFailedAlert.replace("{message}", err.message));
     } finally {
       setUploading(false);
       setLastUploadProgress(0);
+    }
+  };
+
+  const handleTriggerDragEnter = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current += 1;
+    if (e.dataTransfer?.items && e.dataTransfer.items.length > 0) {
+      setIsDragging(true);
+    }
+  };
+
+  const handleTriggerDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsDragging(false);
+    }
+  };
+
+  const handleTriggerDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleTriggerDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDragging(false);
+    const files = Array.from(e.dataTransfer?.files || []).filter((f) =>
+      f.type.startsWith("image/"),
+    );
+    if (files.length > 0) {
+      processFiles(files);
     }
   };
 
@@ -311,11 +381,11 @@ function UploadButton({ apiKey, maxImages, onSelect, onClear, initialUrls = [], 
         {lastUploadProgress}%
       </span>
     </div>
-  ) : label === "Swap Face" ? (
+  ) : label === copy.promptBar.swapFaceLabel ? (
     hasSelection ? (
       <img src={selectedEntries[0].url} alt="" className="w-full h-full object-cover" />
     ) : (
-      <span className="text-[10px] font-bold text-white/50">Face</span>
+      <span className="text-[10px] font-bold text-white/50">{t.faceLabel}</span>
     )
   ) : (
     <svg
@@ -332,13 +402,13 @@ function UploadButton({ apiKey, maxImages, onSelect, onClear, initialUrls = [], 
     </svg>
   );
 
-  const defaultLabel = isMulti ? `Add up to ${maxImages} images` : "Reference image";
+  const defaultLabel = isMulti ? t.addUpToImages.replace("{max}", maxImages) : t.referenceImageLabel;
   const triggerTitle = hasSelection
     ? count > 1
-      ? `${count} of ${maxImages} images selected — click to manage`
+      ? t.multiSelectedTitle.replace("{count}", count).replace("{max}", maxImages)
       : isMulti
-        ? `1 image selected — click to add more (up to ${maxImages})`
-        : label || "Reference image"
+        ? t.singleSelectedTitle.replace("{max}", maxImages)
+        : label || t.referenceImageLabel
     : label || defaultLabel;
 
   return (
@@ -362,9 +432,13 @@ function UploadButton({ apiKey, maxImages, onSelect, onClear, initialUrls = [], 
           e.stopPropagation();
           setPanelOpen((o) => !o);
         }}
-        className={promptMediaButtonClassName({
+        onDragEnter={handleTriggerDragEnter}
+        onDragLeave={handleTriggerDragLeave}
+        onDragOver={handleTriggerDragOver}
+        onDrop={handleTriggerDrop}
+        className={`${promptMediaButtonClassName({
           active: hasSelection,
-        })}
+        })}${isDragging ? " ring-2 ring-primary border-primary bg-primary/10" : ""}`}
       >
         {triggerContent}
       </button>
@@ -380,11 +454,11 @@ function UploadButton({ apiKey, maxImages, onSelect, onClear, initialUrls = [], 
           <div className="flex items-center justify-between px-1 pb-3 mb-2 border-b border-white/5">
             <div className="flex flex-col gap-0.5">
               <span className="text-xs font-bold text-secondary">
-                Reference Images
+                {t.headerTitle}
               </span>
               {isMulti && (
                 <span className="text-[9px] text-muted">
-                  Select up to {maxImages} images
+                  {t.selectUpTo.replace("{max}", maxImages)}
                 </span>
               )}
             </div>
@@ -395,7 +469,7 @@ function UploadButton({ apiKey, maxImages, onSelect, onClear, initialUrls = [], 
                   onClick={handleDone}
                   className="flex items-center gap-1 px-3 py-1.5 bg-primary text-black rounded-xl text-xs font-black transition-all hover:scale-105"
                 >
-                  ✓ Done ({count})
+                  {t.doneButton.replace("{count}", count)}
                 </button>
               )}
               <button
@@ -419,7 +493,7 @@ function UploadButton({ apiKey, maxImages, onSelect, onClear, initialUrls = [], 
                   <polyline points="17 8 12 3 7 8" />
                   <line x1="12" y1="3" x2="12" y2="15" />
                 </svg>
-                {isMulti ? "Upload files" : "Upload new"}
+                {isMulti ? t.uploadFilesButton : t.uploadNewButton}
               </button>
             </div>
           </div>
@@ -440,7 +514,7 @@ function UploadButton({ apiKey, maxImages, onSelect, onClear, initialUrls = [], 
                 <polyline points="17 8 12 3 7 8" />
                 <line x1="12" y1="3" x2="12" y2="15" />
               </svg>
-              <span className="text-xs text-secondary">No uploads yet</span>
+              <span className="text-xs text-secondary">{t.emptyState}</span>
             </div>
           ) : (
             <div className="grid grid-cols-3 gap-2 max-h-56 overflow-y-auto custom-scrollbar pr-0.5">
@@ -483,7 +557,7 @@ function UploadButton({ apiKey, maxImages, onSelect, onClear, initialUrls = [], 
                       <div className="absolute inset-0 bg-black/60 opacity-0 group-hover/cell:opacity-100 transition-opacity flex items-end justify-end p-1">
                         <button
                           type="button"
-                          title="Remove from history"
+                          title={t.removeFromHistory}
                           onClick={(e) => handleRemoveFromHistory(e, entry)}
                           className="w-5 h-5 bg-red-500/80 hover:bg-red-500 rounded-md flex items-center justify-center transition-colors"
                         >
@@ -533,14 +607,14 @@ function UploadButton({ apiKey, maxImages, onSelect, onClear, initialUrls = [], 
           {isMulti && hasSelection && (
             <div className="mt-3 pt-3 border-t border-white/5 flex items-center justify-between">
               <span className="text-xs text-secondary">
-                {count} of {maxImages} selected
+                {t.selectedCount.replace("{count}", count).replace("{max}", maxImages)}
               </span>
               <button
                 type="button"
                 onClick={handleDone}
                 className="px-4 py-1.5 bg-primary text-black rounded-xl text-xs font-black transition-all hover:scale-105"
               >
-                Use Selected
+                {t.useSelected}
               </button>
             </div>
           )}
@@ -582,13 +656,31 @@ const PROVIDER_LOGOS = {
 
 const invertLogos = ['openai', 'blackforest', 'runway', 'ideogram', 'lightricks', 'grok'];
 
-function ModelDropdown({ models, selectedModel, onSelect, onClose }) {
+function ModelDropdown({ selectedModel, onSelect, onClose, copy }) {
+  const t = copy.modelDropdown;
   const [search, setSearch] = useState("");
-  
-  // Find current model's provider to pre-select the provider tab ("slide")
-  const currentModelObj = models.find((m) => m.id === selectedModel);
-  const initialProvider = currentModelObj?.provider || "all";
-  const [selectedProvider, setSelectedProvider] = useState(initialProvider);
+  const selectedEntry = imageModelPickerEntryByVariantId.get(selectedModel);
+  const modelCategories = [
+    {
+      id: "all",
+      label: t.categoryAll,
+      entries: imageModelPickerEntries,
+    },
+    {
+      id: "t2i",
+      label: t.categoryT2I,
+      entries: imageModelPickerEntries.filter((entry) => entry.variantsByMode.t2i),
+    },
+    {
+      id: "i2i",
+      label: t.categoryI2I,
+      entries: imageModelPickerEntries.filter((entry) => entry.variantsByMode.i2i),
+    },
+  ];
+  const [selectedCategory, setSelectedCategory] = useState("all");
+  const [selectedProvider, setSelectedProvider] = useState("all");
+  const activeCategory = modelCategories.find((category) => category.id === selectedCategory) || modelCategories[0];
+  const modelEntries = activeCategory.entries;
 
   const activeItemRef = useRef(null);
 
@@ -639,30 +731,26 @@ function ModelDropdown({ models, selectedModel, onSelect, onClose }) {
   const availableProviders = [];
   const seenProviders = new Set();
   
-  models.forEach(m => {
-    const pId = m.provider || 'muapi';
-    const pName = m.provider_name || 'Muapi';
+  modelEntries.forEach(({ family }) => {
+    const pId = family.provider || 'muapi';
+    const pName = family.provider_name || 'Muapi';
     if (!seenProviders.has(pId)) {
       seenProviders.add(pId);
       availableProviders.push({ id: pId, name: pName });
     }
   });
 
-  const filtered = models.filter((m) => {
+  const filtered = modelEntries.filter((entry) => {
+    const { family } = entry;
     // 1. Filter by provider tab
     if (selectedProvider !== "all") {
-      const pId = m.provider || 'muapi';
+      const pId = family.provider || 'muapi';
       if (pId !== selectedProvider) return false;
     }
     // 2. Filter by search query
     const query = search.toLowerCase();
-    return (
-      m.name.toLowerCase().includes(query) ||
-      m.id.toLowerCase().includes(query)
-    );
+    return entry.searchText.includes(query);
   });
-
-  const invertLogos = ['openai', 'blackforest', 'runway', 'ideogram', 'lightricks', 'grok'];
 
   return (
     <div className="flex gap-4 h-full max-h-[60vh] min-h-[350px] overflow-x-hidden">
@@ -676,7 +764,7 @@ function ModelDropdown({ models, selectedModel, onSelect, onClose }) {
               ? "bg-white/10 text-yellow-400 border-yellow-500/30 shadow-md scale-105"
               : "bg-white/[0.02] text-white/50 border-white/[0.03] hover:bg-white/5 hover:text-white"
           }`}
-          title="All Providers"
+          title={t.allProviders}
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill={selectedProvider === "all" ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2">
             <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
@@ -691,9 +779,10 @@ function ModelDropdown({ models, selectedModel, onSelect, onClose }) {
               key={p.id}
               type="button"
               onClick={() => setSelectedProvider(p.id)}
-              className={`w-8 h-8 flex-shrink-0 rounded-full flex items-center justify-center font-black text-[10px] border transition-all flex-shrink-0 cursor-pointer overflow-hidden ${
+              aria-pressed={isSelected}
+              className={`w-8 h-8 flex-shrink-0 rounded-full flex items-center justify-center overflow-hidden font-black text-[10px] border transition-all cursor-pointer ${
                 isSelected
-                  ? `${style.bg} border-white/25 scale-105 shadow-md`
+                  ? `${style.bg} scale-105 shadow-md shadow-black/10`
                   : "bg-white/[0.02] text-white/40 border-white/[0.02] hover:bg-white/5 hover:text-white/80"
               }`}
               title={p.name}
@@ -714,7 +803,26 @@ function ModelDropdown({ models, selectedModel, onSelect, onClose }) {
 
       {/* Right Pane: Search input + Models list */}
       <div className="flex-1 flex flex-col gap-2 min-w-0">
-        <div className="border-b border-white/5 shrink-0 pb-2">
+        <div className="border-b border-white/5 shrink-0 pb-2 space-y-2">
+          <div className="flex gap-1.5 overflow-x-auto custom-scrollbar pb-0.5">
+            {modelCategories.map((category) => (
+              <button
+                key={category.id}
+                type="button"
+                onClick={() => {
+                  setSelectedCategory(category.id);
+                  setSelectedProvider("all");
+                }}
+                className={`shrink-0 rounded-lg px-2.5 py-1.5 text-[10px] font-bold transition-colors border ${
+                  selectedCategory === category.id
+                    ? "bg-primary/15 text-primary border-primary/30"
+                    : "bg-white/[0.02] text-white/50 border-white/[0.04] hover:bg-white/5 hover:text-white"
+                }`}
+              >
+                {category.label}
+              </button>
+            ))}
+          </div>
           <div className="flex items-center gap-3 bg-white/5 rounded-xl px-4 py-2 border border-white/5 focus-within:border-primary/50 transition-colors">
             <svg
               width="14"
@@ -730,17 +838,21 @@ function ModelDropdown({ models, selectedModel, onSelect, onClose }) {
             </svg>
             <input
               type="text"
-              placeholder="Search models..."
+              placeholder={t.searchPlaceholder}
               value={search}
               onClick={(e) => e.stopPropagation()}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => {
+                const value = e.target.value;
+                setSearch(value);
+                if (value.trim()) setSelectedProvider("all");
+              }}
               className="bg-transparent border-none text-xs text-white focus:ring-0 w-full p-0 focus:outline-none"
             />
           </div>
         </div>
         
         <div className="text-xs font-semibold text-secondary py-1 shrink-0 flex items-center justify-between">
-          <span>Available models</span>
+          <span>{activeCategory.label} {t.modelsSuffix}</span>
           {selectedProvider !== "all" && (
             <span className="text-[10px] bg-white/5 px-2 py-0.5 rounded text-white/60">
               {availableProviders.find(p => p.id === selectedProvider)?.name || selectedProvider}
@@ -751,56 +863,61 @@ function ModelDropdown({ models, selectedModel, onSelect, onClose }) {
         <div className="flex flex-col gap-1.5 overflow-y-auto custom-scrollbar pr-1 pb-2 flex-1">
           {filtered.length === 0 ? (
             <div className="text-xs text-white/30 text-center py-6">
-              No models found
+              {t.noModelsFound}
             </div>
           ) : (
-            filtered.map((m) => (
+            filtered.map((entry) => {
+              const { family } = entry;
+              const isSelected = selectedEntry === entry;
+              return (
               <div
-                key={m.id}
-                ref={selectedModel === m.id ? activeItemRef : null}
+                key={entry.id}
+                ref={isSelected ? activeItemRef : null}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onSelect(m);
+                  onSelect(entry, activeCategory.id);
                   onClose();
                 }}
                 className={`flex items-center justify-between p-3 hover:bg-white/5 rounded-lg cursor-pointer transition-all border border-transparent hover:border-white/5 ${
-                  selectedModel === m.id ? "bg-white/5 border-white/5" : ""
+                  isSelected ? "bg-white/5 border-white/5" : ""
                 }`}
               >
                 <div className="flex items-center gap-3">
-                  {PROVIDER_LOGOS[m.provider] ? (
+                  {PROVIDER_LOGOS[family.provider] ? (
                     <div className="w-8 h-8 rounded-full border border-white/5 overflow-hidden shrink-0 flex items-center justify-center bg-white/[0.02]">
                       <img
-                        src={PROVIDER_LOGOS[m.provider]}
-                        alt={m.provider_name}
-                        className={`w-full h-full object-contain p-1 ${invertLogos.includes(m.provider) ? "invert" : ""}`}
+                        src={PROVIDER_LOGOS[family.provider]}
+                        alt={family.provider_name}
+                        className={`w-full h-full object-contain p-1 ${invertLogos.includes(family.provider) ? "invert" : ""}`}
                       />
                     </div>
                   ) : (
                     <div
                       className={`w-8 h-8 ${
-                        m.family === "kontext"
+                        family.id.includes("kontext")
                           ? "bg-blue-500/10 text-blue-400 border-blue-500/10"
-                          : m.family === "effects"
+                          : family.id.includes("effects")
                             ? "bg-purple-500/10 text-purple-400 border-purple-500/10"
                             : "bg-primary/10 text-primary border-primary/10"
                       } border rounded-full flex items-center justify-center font-bold text-xs shadow-inner uppercase`}
                     >
-                      {m.name.charAt(0)}
+                      {entry.name.charAt(0)}
                     </div>
                   )}
                   <div className="flex flex-col gap-0.5 min-w-0">
                     <span className="text-xs font-bold text-white tracking-tight truncate">
-                      {m.name}
+                      {entry.name}
                     </span>
-                    {selectedProvider === "all" && m.provider_name && (
+                    <div className="flex items-center gap-1.5">
+                    {selectedProvider === "all" && family.provider_name && (
                       <span className="text-[9px] text-white/40">
-                        {m.provider_name}
+                        {family.provider_name}
                       </span>
                     )}
+                    </div>
                   </div>
                 </div>
-                {selectedModel === m.id && (
+                {isSelected && (
                   <svg
                     width="14"
                     height="14"
@@ -813,7 +930,8 @@ function ModelDropdown({ models, selectedModel, onSelect, onClose }) {
                   </svg>
                 )}
               </div>
-            ))
+              );
+            })
           )}
         </div>
       </div>
@@ -855,19 +973,23 @@ export default function ImageStudio({
   onGenerationComplete,
   onGenerationError,
   historyItems,
+  onDeleteHistoryItem,
   droppedFiles,
   onFilesHandled,
+  locale = "en",
 }) {
+  const copy = resolveCopy(en, zh, locale);
   const LEGACY_PERSIST_KEY = "hg_image_studio_persistent";
   const PERSIST_KEY = scopedPersistKey(LEGACY_PERSIST_KEY, apiKey);
   useEffect(() => {
     migrateLegacyPersistKey(LEGACY_PERSIST_KEY, PERSIST_KEY);
   }, [PERSIST_KEY]);
 
-  // ── Model / mode state ──────────────────────────────────────────────────
+  // ── Model state ─────────────────────────────────────────────────────────
+  const initialFamily = imageModelCatalog.familyByVariantId.get(t2iModels[0].id);
   const [imageMode, setImageMode] = useState(false); // false=t2i, true=i2i
   const [selectedModelId, setSelectedModelId] = useState(t2iModels[0].id);
-  const [selectedModelName, setSelectedModelName] = useState(t2iModels[0].name);
+  const [selectedFamilyId, setSelectedFamilyId] = useState(initialFamily.id);
   const [selectedAr, setSelectedAr] = useState(
     t2iModels[0].inputs?.aspect_ratio?.default || "1:1",
   );
@@ -876,7 +998,9 @@ export default function ImageStudio({
     return resolutions[0] || null;
   });
   const [selectedEffect, setSelectedEffect] = useState("");
-  const [maxImages, setMaxImages] = useState(1);
+  const [modelParameterValues, setModelParameterValues] = useState(() =>
+    createModelParameterValues(t2iModels[0]),
+  );
 
   // ── Prompt / upload state ───────────────────────────────────────────────
   const [prompt, setPrompt] = useState("");
@@ -900,10 +1024,25 @@ export default function ImageStudio({
   // Use prop history if provided, otherwise local
   const history = historyItems ?? localHistory;
 
+  // When historyItems is server-backed (White Label / backfilled sessions),
+  // localHistory isn't what's rendered — removal has to go through the
+  // parent so it deletes server-side (UsageLog + S3) and updates the same
+  // state `history` reads from. Falls back to the old local-only removal
+  // when there's no server-backed list (e.g. standalone/embedded studio).
+  const handleDeleteEntry = useCallback(async (entry, idx) => {
+    if (historyItems && onDeleteHistoryItem) {
+      await onDeleteHistoryItem(entry);
+    } else {
+      setLocalHistory((prev) => prev.filter((_, i) => i !== idx));
+    }
+  }, [historyItems, onDeleteHistoryItem]);
+
   // ── Refs ────────────────────────────────────────────────────────────────
   const textareaRef = useRef(null);
   const dropdownRef = useRef(null);
   const uploadPickerResetRef = useRef(null); // not used directly — managed via key
+  const selectionRef = useRef(null);
+  selectionRef.current = { imageMode, selectedFamilyId, selectedModelId };
 
   // ── Close dropdown on outside click ─────────────────────────────────────
   useEffect(() => {
@@ -924,12 +1063,23 @@ export default function ImageStudio({
       if (stored) {
         const data = JSON.parse(stored);
         if (data.imageMode !== undefined) setImageMode(data.imageMode);
-        if (data.selectedModelId) setSelectedModelId(data.selectedModelId);
-        if (data.selectedModelName) setSelectedModelName(data.selectedModelName);
+        if (data.selectedModelId) {
+          const restoredFamily = imageModelCatalog.familyByVariantId.get(data.selectedModelId);
+          const restoredVariant = imageModelCatalog.variantById.get(data.selectedModelId);
+          if (restoredFamily) {
+            setSelectedModelId(data.selectedModelId);
+            setSelectedFamilyId(restoredFamily.id);
+            setModelParameterValues(
+              createModelParameterValues(
+                restoredVariant?.model,
+                data.modelParameterValues || {},
+              ),
+            );
+          }
+        }
         if (data.selectedAr) setSelectedAr(data.selectedAr);
         if (data.selectedQuality) setSelectedQuality(data.selectedQuality);
         if (data.selectedEffect) setSelectedEffect(data.selectedEffect);
-        if (data.maxImages) setMaxImages(data.maxImages);
         if (data.prompt) setPrompt(data.prompt);
         if (data.uploadedImageUrls) setUploadedImageUrls(data.uploadedImageUrls);
         if (data.uploadHistory) setUploadHistory(data.uploadHistory);
@@ -949,11 +1099,11 @@ export default function ImageStudio({
         const state = {
           imageMode,
           selectedModelId,
-          selectedModelName,
+          selectedFamilyId,
           selectedAr,
           selectedQuality,
           selectedEffect,
-          maxImages,
+          modelParameterValues,
           prompt,
           uploadedImageUrls,
           uploadHistory,
@@ -969,11 +1119,11 @@ export default function ImageStudio({
   }, [
     imageMode,
     selectedModelId,
-    selectedModelName,
+    selectedFamilyId,
     selectedAr,
     selectedQuality,
     selectedEffect,
-    maxImages,
+    modelParameterValues,
     prompt,
     uploadedImageUrls,
     uploadHistory,
@@ -986,15 +1136,30 @@ export default function ImageStudio({
     const tooLarge = files.filter((f) => f.size > MAX_IMAGE_SIZE);
     if (tooLarge.length > 0) {
       alert(
-        `The following images are too large (max 10MB): ${tooLarge.map((f) => f.name).join(", ")}`
+        copy.uploadButton.tooLargeAlert.replace("{names}", tooLarge.map((f) => f.name).join(", "))
       );
+      return;
+    }
+
+    const family = imageModelCatalog.familyById.get(selectedFamilyId);
+    const editor = getFamilyVariant(
+      imageModelCatalog,
+      family,
+      "i2i",
+      selectedModelId,
+    );
+    if (!editor) {
+      toast.error(copy.errors.noImageReferenceSupport.replace("{name}", family.name));
       return;
     }
 
     setGenerating(true); // Show as generating/busy
     try {
+      const uploadLimit = getMaxImagesForI2IModel(editor.model.id);
       const toUpload =
-        maxImages === 1 ? files.slice(0, 1) : files.slice(0, maxImages);
+        uploadLimit === 1
+          ? files.slice(0, 1)
+          : files.slice(0, uploadLimit);
       const urls = await Promise.all(
         toUpload.map(async (file) => {
           try {
@@ -1012,7 +1177,7 @@ export default function ImageStudio({
 
       handleUploadSelect({ urls });
     } catch (err) {
-      alert(`Image upload failed: ${err.message}`);
+      alert(copy.uploadButton.uploadFailedAlert.replace("{message}", err.message));
     } finally {
       setGenerating(false);
     }
@@ -1030,7 +1195,6 @@ export default function ImageStudio({
   }, [droppedFiles, onFilesHandled, processDroppedImages]);
 
   // ── Derived: current model lists & helpers ───────────────────────────────
-  const currentModels = imageMode ? i2iModels : t2iModels;
   const currentAspectRatios = imageMode
     ? getAspectRatiosForI2IModel(selectedModelId)
     : getAspectRatiosForModel(selectedModelId);
@@ -1043,131 +1207,119 @@ export default function ImageStudio({
   const showQualityBtn = currentResolutions.length > 0;
   const currentEffects = imageMode ? getEffectsForI2IModel(selectedModelId) : [];
   const showEffectBtn = currentEffects.length > 0;
+  const selectedFamily = imageModelCatalog.familyById.get(selectedFamilyId) || initialFamily;
+  const selectedPickerEntry = imageModelPickerEntryByVariantId.get(selectedModelId);
+  const selectedModelDisplayName = selectedPickerEntry?.name || selectedFamily.name;
+  const currentMode = imageMode ? "i2i" : "t2i";
+  const selectedVariant = imageModelCatalog.variantById.get(selectedModelId);
+  const supplementalInputs = getSupplementalModelInputs(selectedVariant?.model);
+  const referenceVariant = getImageReferenceVariant(
+    imageModelCatalog,
+    selectedFamily,
+    selectedModelId,
+  );
+  const referenceImageLimit = referenceVariant
+    ? getModelMediaCapabilities(referenceVariant.model).image.maxItems
+    : 1;
+
+  const applySelectedVariant = useCallback((variant, mode, family) => {
+    const model = variant.model;
+    const nextImageMode = mode === "i2i";
+    const ars = nextImageMode
+      ? getAspectRatiosForI2IModel(model.id)
+      : getAspectRatiosForModel(model.id);
+    const resolutions = nextImageMode
+      ? getResolutionsForI2IModel(model.id)
+      : getResolutionsForModel(model.id);
+
+    selectionRef.current = {
+      imageMode: nextImageMode,
+      selectedFamilyId: family.id,
+      selectedModelId: model.id,
+    };
+    setImageMode(nextImageMode);
+    setSelectedFamilyId(family.id);
+    setSelectedModelId(model.id);
+    setModelParameterValues((values) =>
+      createModelParameterValues(model, values),
+    );
+    setSelectedAr(ars[0] || "1:1");
+    setSelectedQuality(resolutions[0] || null);
+
+    if (nextImageMode) {
+      const effects = getEffectsForI2IModel(model.id);
+      setSelectedEffect(
+        effects.length > 0
+          ? (getDefaultEffectForI2IModel(model.id) || effects[0])
+          : "",
+      );
+    } else {
+      setSelectedEffect("");
+    }
+  }, []);
+
+  const applyUserSelectedVariant = useCallback((variant, mode, family) => {
+    if (mode === "t2i") {
+      setUploadedImageUrls([]);
+    } else {
+      const maxImages = getMaxImagesForI2IModel(variant.model.id);
+      setUploadedImageUrls((urls) => urls.slice(0, maxImages));
+    }
+    setSwapImageUrl(null);
+    applySelectedVariant(variant, mode, family);
+  }, [applySelectedVariant]);
 
   // ── Textarea auto-resize ─────────────────────────────────────────────────
   // ── Upload picker callbacks ──────────────────────────────────────────────
   const handleUploadSelect = useCallback(
     ({ url, urls }) => {
       const newUrls = urls || [url];
-      setUploadedImageUrls(newUrls);
+      const selection = selectionRef.current;
+      const family = imageModelCatalog.familyById.get(selection.selectedFamilyId);
+      const target = getImageReferenceVariant(
+        imageModelCatalog,
+        family,
+        selection.selectedModelId,
+      );
+      if (!target) {
+        toast.error(copy.errors.noImageReferenceSupport.replace("{name}", family.name));
+        return;
+      }
 
-      if (!imageMode) {
-        // Find the i2i sibling of the currently selected t2i model.
-        // Many models follow conventions, but some have completely irregular names —
-        // those are handled via a hardcoded exceptions map.
-        const curId = selectedModelId;
-        const i2iIds = new Set(i2iModels.map((m) => m.id));
-
-        // Hardcoded exceptions for models with irregular t2i → i2i naming
-        const EXCEPTIONS = {
-          'reve-text-to-image':          'reve-image-edit',
-          'wan2.1-text-to-image':        'wan2.5-image-edit',   // no wan2.1 i2i — closest
-          'wan2.5-text-to-image':        'wan2.5-image-edit',
-          'wan2.6-text-to-image':        'wan2.6-image-edit',
-          'kling-o1-text-to-image':      'kling-o1-edit-image',
-          'vidu-q2-text-to-image':       'vidu-q2-reference-to-image',
-          'bytedance-seedream-v3':       'bytedance-seededit-v3',
-          'bytedance-seedream-v4':       'bytedance-seedream-edit-v4',
-          'ideogram-v3-t2i':             'ideogram-v3-reframe',
-        };
-
-        const findI2I = (id) => i2iModels.find((m) => m.id === id) ?? null;
-
-        const target =
-          // 0. Hardcoded exceptions for irregular names
-          findI2I(EXCEPTIONS[curId]) ||
-          // 1. Model exists directly in i2i list (e.g. qwen-text-to-image-2512, flux-pulid, flux-redux)
-          findI2I(curId) ||
-          // 2. {id}-edit suffix (e.g. nano-banana → nano-banana-edit, gpt-image-1.5 → gpt-image-1.5-edit)
-          findI2I(`${curId}-edit`) ||
-          // 3. -t2i → -i2i (e.g. flux-kontext-dev-t2i → flux-kontext-dev-i2i)
-          (curId.includes('-t2i') && findI2I(curId.replace('-t2i', '-i2i'))) ||
-          // 4. text-to-image → image-to-image (e.g. gpt4o-text-to-image, midjourney-v7, grok-imagine)
-          (curId.includes('text-to-image') && findI2I(curId.replace('text-to-image', 'image-to-image'))) ||
-          // 5. Prefix match fallback (e.g. minimax-image-01 → minimax-image-01-subject-reference)
-          i2iModels.find((m) => m.id.startsWith(curId)) ||
-          // 6. No sibling exists — use first i2i model
-          i2iModels[0];
-
-        const ars = getAspectRatiosForI2IModel(target.id);
-        const resolutions = getResolutionsForI2IModel(target.id);
-        const effects = getEffectsForI2IModel(target.id);
-        setImageMode(true);
-        setSelectedModelId(target.id);
-        setSelectedModelName(target.name);
-        setSelectedAr(ars[0] || "1:1");
-        setSelectedQuality(resolutions[0] || null);
-        setSelectedEffect(effects.length > 0 ? (getDefaultEffectForI2IModel(target.id) || effects[0]) : "");
-        setMaxImages(getMaxImagesForI2IModel(target.id));
+      const limit = getModelMediaCapabilities(target.model).image.maxItems;
+      setUploadedImageUrls(newUrls.slice(0, limit));
+      const currentMode = selection.imageMode ? "i2i" : "t2i";
+      if (target.model.id !== selection.selectedModelId || target.mode !== currentMode) {
+        applySelectedVariant(target, target.mode, family);
       }
     },
-    [imageMode, selectedModelId],
+    [applySelectedVariant],
   );
 
   const handleUploadClear = useCallback(() => {
     setUploadedImageUrls([]);
-    setImageMode(false);
-
-    // Find the t2i parent of the currently selected i2i model (reverse of upload logic)
-    const curId = selectedModelId;
-    const findT2I = (id) => id ? (t2iModels.find((m) => m.id === id) ?? null) : null;
-
-    // Reverse exceptions map (i2i → t2i for irregular names)
-    const REVERSE_EXCEPTIONS = {
-      'reve-image-edit':               'reve-text-to-image',
-      'wan2.5-image-edit':             'wan2.5-text-to-image',
-      'wan2.6-image-edit':             'wan2.6-text-to-image',
-      'kling-o1-edit-image':           'kling-o1-text-to-image',
-      'vidu-q2-reference-to-image':    'vidu-q2-text-to-image',
-      'bytedance-seededit-v3':         'bytedance-seedream-v3',
-      'bytedance-seedream-edit-v4':    'bytedance-seedream-v4',
-      'ideogram-v3-reframe':           'ideogram-v3-t2i',
-    };
-
-    const target =
-      // 0. Hardcoded reverse exceptions
-      findT2I(REVERSE_EXCEPTIONS[curId]) ||
-      // 1. Model exists directly in t2i list (e.g. qwen-text-to-image-2512, flux-pulid, flux-redux)
-      findT2I(curId) ||
-      // 2. Strip -edit suffix (e.g. nano-banana-edit → nano-banana, gpt-image-1.5-edit → gpt-image-1.5)
-      (curId.endsWith('-edit') && findT2I(curId.slice(0, -5))) ||
-      // 3. -i2i → -t2i (e.g. flux-kontext-dev-i2i → flux-kontext-dev-t2i)
-      (curId.includes('-i2i') && findT2I(curId.replace('-i2i', '-t2i'))) ||
-      // 4. image-to-image → text-to-image (e.g. gpt4o-image-to-image → gpt4o-text-to-image)
-      (curId.includes('image-to-image') && findT2I(curId.replace('image-to-image', 'text-to-image'))) ||
-      // 5. No parent found — use first t2i model
-      t2iModels[0];
-
-    const ars = getAspectRatiosForModel(target.id);
-    const resolutions = getResolutionsForModel(target.id);
-    setSelectedModelId(target.id);
-    setSelectedModelName(target.name);
-    setSelectedAr(ars[0] || "1:1");
-    setSelectedQuality(resolutions[0] || null);
-    setSelectedEffect("");
-    setMaxImages(1);
-  }, [selectedModelId]);
+    const selection = selectionRef.current;
+    const family = imageModelCatalog.familyById.get(selection.selectedFamilyId);
+    const target = getFamilyVariant(
+      imageModelCatalog,
+      family,
+      "t2i",
+      selection.selectedModelId,
+    );
+    if (target) applySelectedVariant(target, "t2i", family);
+  }, [applySelectedVariant]);
 
   // ── Model selection ──────────────────────────────────────────────────────
-  const handleModelSelect = (m) => {
-    const ars = imageMode
-      ? getAspectRatiosForI2IModel(m.id)
-      : getAspectRatiosForModel(m.id);
-    const resolutions = imageMode
-      ? getResolutionsForI2IModel(m.id)
-      : getResolutionsForModel(m.id);
-    setSelectedModelId(m.id);
-    setSelectedModelName(m.name);
-    setSelectedAr(ars[0] || "1:1");
-    setSelectedQuality(resolutions[0] || null);
-    setSwapImageUrl(null);
-    if (imageMode) {
-      setMaxImages(getMaxImagesForI2IModel(m.id));
-      const effects = getEffectsForI2IModel(m.id);
-      setSelectedEffect(effects.length > 0 ? (getDefaultEffectForI2IModel(m.id) || effects[0]) : "");
-    } else {
-      setSelectedEffect("");
-    }
+  const handleModelSelect = (pickerEntry, category = "all") => {
+    const { family, variantsByMode, defaultVariant } = pickerEntry;
+    const target = category !== "all"
+      ? variantsByMode[category]
+      : uploadedImageUrls.length > 0 && variantsByMode.i2i
+        ? variantsByMode.i2i
+        : variantsByMode[currentMode] || defaultVariant;
+    if (!target) return;
+
+    applyUserSelectedVariant(target, target.mode, family);
   };
 
   // ── History helpers ──────────────────────────────────────────────────────
@@ -1192,12 +1344,13 @@ export default function ImageStudio({
     const firstT2I = t2iModels[0];
     const ars = getAspectRatiosForModel(firstT2I.id);
     const resolutions = getResolutionsForModel(firstT2I.id);
+    const family = imageModelCatalog.familyByVariantId.get(firstT2I.id);
     setSelectedModelId(firstT2I.id);
-    setSelectedModelName(firstT2I.name);
+    setSelectedFamilyId(family.id);
     setSelectedAr(ars[0] || "1:1");
     setSelectedQuality(resolutions[0] || null);
     setSelectedEffect("");
-    setMaxImages(1);
+    setModelParameterValues(createModelParameterValues(firstT2I));
   };
 
   // ── Generation ───────────────────────────────────────────────────────────
@@ -1206,17 +1359,22 @@ export default function ImageStudio({
 
     if (imageMode) {
       if (uploadedImageUrls.length === 0) {
-        alert("Please upload a reference image first.");
+        alert(copy.errors.uploadReferenceFirst);
         return;
       }
       const modelInfo = getI2IModelById(selectedModelId);
       if (modelInfo?.swapField && !swapImageUrl) {
-        alert("Please upload a swap face image.");
+        alert(copy.errors.uploadSwapFaceFirst);
         return;
       }
     } else {
+      const imageCapability = getModelMediaCapabilities(selectedVariant?.model).image;
+      if (uploadedImageUrls.length > 0 && imageCapability.maxItems === 0) {
+        alert(copy.errors.noImageReferenceSupport.replace("{name}", selectedModelDisplayName));
+        return;
+      }
       if (!prompt.trim()) {
-        alert("Please enter a prompt to generate an image.");
+        alert(copy.errors.enterPromptFirst);
         return;
       }
     }
@@ -1231,6 +1389,10 @@ export default function ImageStudio({
           if (imageMode) {
             const genParams = {
               model: selectedModelId,
+              ...buildSupplementalInputPayload(
+                selectedVariant?.model,
+                modelParameterValues,
+              ),
               images_list: uploadedImageUrls,
               image_url: uploadedImageUrls[0],
               aspect_ratio: selectedAr,
@@ -1243,8 +1405,16 @@ export default function ImageStudio({
             if (showEffectBtn && selectedEffect) genParams.name = selectedEffect;
             return await generateI2I(apiKey, genParams);
           } else {
+            const referenceParams = buildReferenceParams(selectedVariant?.model, {
+              imageUrls: uploadedImageUrls,
+            });
             const genParams = {
               model: selectedModelId,
+              ...buildSupplementalInputPayload(
+                selectedVariant?.model,
+                modelParameterValues,
+              ),
+              ...referenceParams,
               prompt: prompt.trim(),
               aspect_ratio: selectedAr,
             };
@@ -1277,7 +1447,7 @@ export default function ImageStudio({
       });
     } catch (e) {
       console.error("[ImageStudio] Generation failed:", e);
-      const errMsg = formatErrorMessage(e, "Image generation failed");
+      const errMsg = formatErrorMessage(e, copy.errors.generationFailed);
       if (onGenerationError) onGenerationError(errMsg);
       else toast.error(errMsg);
     } finally {
@@ -1288,10 +1458,10 @@ export default function ImageStudio({
 
   const placeholderText =
     uploadedImageUrls.length > 1
-      ? `${uploadedImageUrls.length} images selected — describe the transformation (optional)`
+      ? copy.promptBar.placeholderMultiImage.replace("{count}", uploadedImageUrls.length)
       : imageMode
-        ? "Describe how to transform this image (optional)"
-        : "Describe the image you want to create";
+        ? copy.promptBar.placeholderI2I
+        : copy.promptBar.placeholderT2I;
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
@@ -1309,10 +1479,10 @@ export default function ImageStudio({
               >
                 <img
                   src={entry.url}
-                  alt={entry.prompt?.substring(0, 30) || "Generated image"}
+                  alt={entry.prompt?.substring(0, 30) || copy.gallery.generatedImageAlt}
                   className="w-full aspect-square object-cover bg-black/40 hover:opacity-80 transition-opacity"
                 />
-                
+
                 {/* Overlay actions */}
                 <div className="absolute top-2 right-2 hidden md:flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                   <GenerationCopyButtons
@@ -1322,7 +1492,7 @@ export default function ImageStudio({
                   />
                   <button
                     type="button"
-                    title="Download"
+                    title={copy.gallery.download}
                     onClick={(e) => {
                       e.stopPropagation();
                       downloadImage(entry.url, `muapi-${entry.id || idx}.jpg`);
@@ -1335,11 +1505,13 @@ export default function ImageStudio({
                   </button>
                   <button
                     type="button"
-                    title="Delete"
+                    title={copy.gallery.delete}
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (confirm("Are you sure you want to delete this generated item?")) {
-                        setLocalHistory(prev => prev.filter((_, i) => i !== idx));
+                      if (confirm(copy.gallery.deleteConfirm)) {
+                        handleDeleteEntry(entry, idx).catch((err) => {
+                          onGenerationError?.(err.message || copy.gallery.deleteFailed);
+                        });
                       }
                     }}
                     className="p-2 bg-black/60 backdrop-blur-md rounded-full text-red-400 hover:bg-red-500 hover:text-white transition-all border border-white/10"
@@ -1359,17 +1531,19 @@ export default function ImageStudio({
                   actions={[
                     {
                       kind: "download",
-                      label: "Download",
+                      label: copy.gallery.download,
                       onSelect: () =>
                         downloadImage(entry.url, `muapi-${entry.id || idx}.jpg`),
                     },
                     {
                       kind: "delete",
-                      label: "Delete",
+                      label: copy.gallery.delete,
                       danger: true,
                       onSelect: () => {
-                        if (confirm("Are you sure you want to delete this generated item?")) {
-                          setLocalHistory((prev) => prev.filter((_, i) => i !== idx));
+                        if (confirm(copy.gallery.deleteConfirm)) {
+                          handleDeleteEntry(entry, idx).catch((err) => {
+                            onGenerationError?.(err.message || copy.gallery.deleteFailed);
+                          });
                         }
                       },
                     },
@@ -1379,12 +1553,12 @@ export default function ImageStudio({
                 {/* Prompt & Details */}
                 <div className="p-3 bg-black/80 backdrop-blur-sm border-t border-white/5 flex-1 flex flex-col justify-between gap-2">
                   <p className="text-white/70 text-xs line-clamp-3 leading-relaxed" title={entry.prompt}>
-                    {entry.prompt || "No prompt provided"}
+                    {entry.prompt || copy.gallery.noPrompt}
                   </p>
                   <div className="flex items-center justify-between mt-1">
                     <div className="flex items-center gap-2">
                       <span className="text-[10px] font-bold text-primary px-2 py-0.5 bg-primary/10 rounded border border-primary/20 capitalize">
-                        {entry.model?.replace("-", " ") || "Image Studio"}
+                        {entry.model?.replace("-", " ") || copy.gallery.modelFallback}
                       </span>
                       <span className="text-[10px] text-white/40">{entry.aspect_ratio}</span>
                     </div>
@@ -1428,13 +1602,13 @@ export default function ImageStudio({
             </div>
 
             <h1 className="text-2xl sm:text-4xl md:text-5xl font-extrabold tracking-tight mb-4 text-center px-4 flex flex-col items-center">
-              <span className="text-white font-black uppercase text-xl sm:text-3xl tracking-wide mb-1 opacity-90">START CREATING WITH</span>
+              <span className="text-white font-black uppercase text-xl sm:text-3xl tracking-wide mb-1 opacity-90">{copy.emptyState.heading}</span>
               <span className="text-[#22d3ee] font-black uppercase text-2xl sm:text-4xl sm:mt-1 tracking-tight">
-                {selectedModelName}
+                {selectedModelDisplayName}
               </span>
             </h1>
             <p className="text-white/40 text-xs sm:text-sm font-medium tracking-wide text-center max-w-lg leading-relaxed px-4">
-              Describe a scene, character, mood, or style — and watch it come to life
+              {copy.emptyState.subtitle}
             </p>
           </div>
         )}
@@ -1464,15 +1638,16 @@ export default function ImageStudio({
               ))}
               
               {/* Main Upload Trigger */}
-              {uploadedImageUrls.length < maxImages && (
+              {referenceVariant && uploadedImageUrls.length < referenceImageLimit && (
                 <UploadButton
                   apiKey={apiKey}
-                  maxImages={maxImages}
+                  maxImages={referenceImageLimit}
                   onSelect={handleUploadSelect}
                   onClear={handleUploadClear}
                   initialUrls={uploadedImageUrls}
                   persistedHistory={uploadHistory}
                   onHistoryChange={setUploadHistory}
+                  copy={copy}
                 />
               )}
 
@@ -1484,7 +1659,8 @@ export default function ImageStudio({
                   onSelect={({ urls }) => setSwapImageUrl(urls[0] || null)}
                   onClear={() => setSwapImageUrl(null)}
                   initialUrls={swapImageUrl ? [swapImageUrl] : []}
-                  label="Swap Face"
+                  label={copy.promptBar.swapFaceLabel}
+                  copy={copy}
                 />
               )}
             </div>
@@ -1516,8 +1692,7 @@ export default function ImageStudio({
                 >
                   <div className="w-4 h-4 rounded overflow-hidden shrink-0 flex items-center justify-center bg-white/5">
                     {(() => {
-                      const selectedModelObj = currentModels.find(m => m.id === selectedModelId);
-                      const selectedModelProvider = selectedModelObj?.provider || 'muapi';
+                      const selectedModelProvider = selectedFamily.provider || 'muapi';
                       return PROVIDER_LOGOS[selectedModelProvider] ? (
                         <img 
                           src={PROVIDER_LOGOS[selectedModelProvider]} 
@@ -1530,7 +1705,7 @@ export default function ImageStudio({
                     })()}
                   </div>
                   <span className={PROMPT_CONTROL_LABEL_CLASS}>
-                    {selectedModelName}
+                    {selectedModelDisplayName}
                   </span>
                   <PromptChevronIcon />
                 </button>
@@ -1540,16 +1715,31 @@ export default function ImageStudio({
                     onClick={(e) => e.stopPropagation()}
                     className="w-[calc(100vw-2rem)] md:w-[480px] max-w-md md:max-w-none max-h-[70vh]"
                   >
-                    <PromptPopoverHeader>Model</PromptPopoverHeader>
+                    <PromptPopoverHeader>{copy.popovers.model}</PromptPopoverHeader>
                     <ModelDropdown
-                      models={currentModels}
                       selectedModel={selectedModelId}
                       onSelect={handleModelSelect}
                       onClose={() => setDropdownOpen(null)}
+                      copy={copy}
                     />
                   </PromptPopover>
                 )}
               </div>
+
+              <ModelParameterControls
+                inputs={supplementalInputs}
+                values={modelParameterValues}
+                onChange={(key, value) =>
+                  setModelParameterValues((values) => ({ ...values, [key]: value }))
+                }
+                open={dropdownOpen === "parameters"}
+                onToggle={(event) => {
+                  event.stopPropagation();
+                  setDropdownOpen((open) =>
+                    open === "parameters" ? null : "parameters",
+                  );
+                }}
+              />
 
               {/* Aspect ratio button */}
               <div className="relative">
@@ -1574,7 +1764,7 @@ export default function ImageStudio({
                     onClick={(e) => e.stopPropagation()}
                   >
                     <SimpleDropdown
-                      title="Aspect Ratio"
+                      title={copy.popovers.aspectRatio}
                       options={currentAspectRatios}
                       selected={selectedAr}
                       onSelect={(val) => setSelectedAr(val)}
@@ -1608,7 +1798,7 @@ export default function ImageStudio({
                       onClick={(e) => e.stopPropagation()}
                     >
                       <SimpleDropdown
-                        title="Resolution"
+                        title={copy.popovers.resolution}
                         options={currentResolutions}
                         selected={selectedQuality}
                         onSelect={(val) => setSelectedQuality(val)}
@@ -1636,7 +1826,7 @@ export default function ImageStudio({
                       <path d="M5 3l14 9-14 9V3z" />
                     </svg>
                     <span className={`${PROMPT_CONTROL_LABEL_CLASS} max-w-[140px] truncate`}>
-                      {selectedEffect || "Effect"}
+                      {selectedEffect || copy.promptBar.effectFallback}
                     </span>
                   </button>
 
@@ -1646,7 +1836,7 @@ export default function ImageStudio({
                       className="min-w-[200px]"
                     >
                       <SimpleDropdown
-                        title="Effect Type"
+                        title={copy.popovers.effectType}
                         options={currentEffects}
                         selected={selectedEffect}
                         onSelect={(val) => setSelectedEffect(val)}
@@ -1689,7 +1879,7 @@ export default function ImageStudio({
                   <path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z" />
                 </svg>
                 <span className={PROMPT_CONTROL_LABEL_CLASS}>
-                  Draw
+                  {copy.promptBar.drawButton}
                 </span>
               </button>
             </PromptControls>
@@ -1702,11 +1892,11 @@ export default function ImageStudio({
               {generating ? (
                 <>
                   <span className="animate-spin inline-block text-black">◌</span>
-                  Generating...
+                  {copy.promptBar.generating}
                 </>
               ) : (
                 <>
-                  <span>Generate ✦</span>
+                  <span>{copy.promptBar.generateButton}</span>
                 </>
               )}
             </PromptAction>
@@ -1732,9 +1922,9 @@ export default function ImageStudio({
               <line x1="6" y1="6" x2="18" y2="18" />
             </svg>
           </button>
-          <img 
-            src={fullscreenUrl} 
-            alt="Fullscreen Preview" 
+          <img
+            src={fullscreenUrl}
+            alt={copy.fullscreen.previewAlt}
             className="max-w-[95vw] max-h-[95vh] rounded-2xl shadow-2xl object-contain animate-scale-up" 
             onClick={(e) => e.stopPropagation()}
           />
