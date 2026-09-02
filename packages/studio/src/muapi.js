@@ -308,6 +308,36 @@ export async function generateAudio(apiKey, params) {
     return submitAndPoll(endpoint, payload, apiKey, params.onRequestId, 900);
 }
 
+// El error de subida se le enseña al usuario en un alert, asi que es la unica
+// pista que tiene. La version anterior hacia `errObj.detail || statusText` y
+// lo interpolaba en una plantilla: cuando la API devuelve `detail` como objeto
+// o como lista (validaciones estilo FastAPI), eso se convertia en el literal
+// "[object Object]" y se perdia el motivo real del fallo.
+function describeUploadError(xhr) {
+    const fromValue = (value) => {
+        if (!value) return '';
+        if (typeof value === 'string') return value;
+        if (Array.isArray(value)) return value.map(fromValue).filter(Boolean).join('; ');
+        if (typeof value === 'object') {
+            // Formas habituales: {message}, {msg}, {error:{message}}, {code}
+            return fromValue(value.message || value.msg || value.error || value.detail)
+                || (value.code ? String(value.code) : '')
+                || JSON.stringify(value);
+        }
+        return String(value);
+    };
+
+    const raw = (xhr.responseText || '').trim();
+    try {
+        const parsed = JSON.parse(raw);
+        const described = fromValue(parsed.detail) || fromValue(parsed.error) || fromValue(parsed.message);
+        if (described) return described;
+    } catch (e) {
+        // No era JSON: el cuerpo en crudo suele ser mas util que el statusText.
+    }
+    return raw.slice(0, 300) || xhr.statusText || 'sin detalle';
+}
+
 export function uploadFile(apiKey, file, onProgress) {
     return new Promise((resolve, reject) => {
         const url = `${BASE_URL}/api/v1/upload_file`;
@@ -346,13 +376,7 @@ export function uploadFile(apiKey, file, onProgress) {
                     reject(new Error('Failed to parse upload response'));
                 }
             } else {
-                let detail = xhr.statusText;
-                try {
-                    const errObj = JSON.parse(xhr.responseText);
-                    detail = errObj.detail || detail;
-                } catch (e) {
-                    // fallback to statusText
-                }
+                const detail = describeUploadError(xhr);
                 notifyAuthRequired(xhr.status, detail);
                 reject(new Error(`File upload failed: ${xhr.status} - ${detail}`));
             }
