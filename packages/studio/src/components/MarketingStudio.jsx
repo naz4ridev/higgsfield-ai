@@ -211,7 +211,7 @@ function UploadSlot({ icon, url, progress, label, title, onUpload, onClear, mult
   );
 }
 
-function Dropdown({ isOpen, title, items, selectedId, onSelect, onClose, isVideo = false, onPreview = null }) {
+function Dropdown({ isOpen, title, items, selectedId, onSelect, onClose, isVideo = false, onPreview = null, copy = en }) {
   const ref = useRef(null);
   
   useEffect(() => {
@@ -693,6 +693,7 @@ export default function MarketingStudio({
                   <PromptChevronIcon />
                 </button>
                 <Dropdown 
+                  copy={copy}
                   isOpen={dropdown === 'format'} 
                   title={copy.dropdowns.videoFormatPresets}
                   items={ASSETS.ugc} 
@@ -748,6 +749,7 @@ export default function MarketingStudio({
                 )}
 
                 <Dropdown 
+                  copy={copy}
                   isOpen={dropdown === 'avatar'} 
                   title={copy.dropdowns.avatarPresets}
                   items={ASSETS.avatar} 
